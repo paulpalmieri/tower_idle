@@ -8,18 +8,72 @@ love .
 
 # Run tests (when implemented)
 love . --test
-
-# Check code style
-luacheck .
 ```
 
 ---
 
-## Project Overview
+## Game Overview
 
-Tower Idle is a hybrid idle tower defense game where players control their own difficulty by sending monsters to the Void for income. Built with LÖVE2D (Lua 5.1).
+**Genre:** Idle Tower Defense / Incremental
+**Platform:** Desktop (Windows, Mac, Linux via LÖVE2D)
+**Target Session:** 15-30 minutes active play
 
-**Design Doc:** See `DESIGN.md` for full game design specification.
+### Core Concept
+
+A tower defense game where **you control your own difficulty**.
+
+Send monsters to the Void to increase your passive income — but those same monsters come back in waves to attack you. The more you send, the richer you get, the harder it becomes.
+
+**The Question:** How greedy can you get before your defense collapses?
+
+### Player Fantasies
+
+| Fantasy | How It Manifests |
+|---------|------------------|
+| **Greed & Risk** | Send harder monsters = more income = harder waves. Push until you break. |
+| **Builder/Optimizer** | Design the perfect maze. Tower placement and synergy matter. |
+| **Idle Satisfaction** | Set things up, walk away, return to accumulated gold and progress. |
+| **Escalating Chaos** | Late game should be visually overwhelming — hundreds of enemies vs. your death maze. |
+
+---
+
+## Core Loop
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         ACTIVE PLAY                             │
+│                                                                 │
+│   ┌─────────┐      ┌─────────┐      ┌─────────┐                │
+│   │  BUILD  │ ───► │  SEND   │ ───► │ SURVIVE │                │
+│   │ TOWERS  │      │ TO VOID │      │  WAVES  │                │
+│   └─────────┘      └─────────┘      └─────────┘                │
+│        │                │                │                      │
+│        │                ▼                │                      │
+│        │         ┌───────────┐          │                      │
+│        └───────► │  INCOME   │ ◄────────┘                      │
+│                  │  TICKS    │                                  │
+│                  └───────────┘                                  │
+│                        │                                        │
+│                        ▼                                        │
+│              (Gold to build more / send more)                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Towers
+
+4 tower types with distinct roles (see `src/config.lua` for stats):
+- **Turret** — Balanced DPS
+- **Rapid** — Crowd Control (fast fire, low damage)
+- **Sniper** — Single Target (high damage, slow fire)
+- **Cannon** — Area Damage (splash radius)
+
+### Enemies (Creeps)
+
+Geometric shapes where more sides = stronger (see `src/config.lua` for stats):
+- **Triangle** (3) — Fast, weak
+- **Square** (4) — Balanced
+- **Pentagon** (5) — Slow, tanky
+- **Hexagon** (6) — Very slow, very tanky
 
 ---
 
@@ -119,38 +173,27 @@ src/
 │
 ├── core/                 # Engine-level, game-agnostic
 │   ├── state_machine.lua     # Game state management
-│   ├── event_bus.lua         # Pub/sub event system
-│   ├── input.lua             # Input handling
-│   └── save.lua              # Save/load system
+│   └── event_bus.lua         # Pub/sub event system
 │
 ├── systems/              # Game logic, no rendering
 │   ├── economy.lua           # Gold, income, spending
 │   ├── waves.lua             # Wave spawning and composition
 │   ├── combat.lua            # Damage calculation, targeting
-│   ├── pathfinding.lua       # A*, flow fields
-│   └── prestige.lua          # Prestige logic, permanent upgrades
+│   └── pathfinding.lua       # A*, flow fields
 │
 ├── entities/             # Game objects
 │   ├── tower.lua             # Tower entity
 │   ├── creep.lua             # Enemy entity
-│   ├── projectile.lua        # Projectile entity
-│   └── particle.lua          # Visual particle
+│   └── projectile.lua        # Projectile entity
 │
 ├── world/                # Play area
-│   ├── grid.lua              # Grid state and queries
-│   └── renderer.lua          # Draw order, layers
+│   └── grid.lua              # Grid state and queries
 │
-├── ui/                   # User interface
-│   ├── hud.lua               # In-game HUD
-│   ├── panel.lua             # Side panel
-│   └── screens/              # Full-screen UIs
-│       ├── game.lua
-│       ├── prestige.lua
-│       └── settings.lua
-│
-└── fx/                   # Visual effects (Phase 2+)
-    ├── feedback.lua          # Screen shake, hitstop
-    └── particles.lua         # Particle spawning
+└── ui/                   # User interface
+    ├── hud.lua               # In-game HUD
+    ├── panel.lua             # Side panel
+    └── screens/
+        └── game.lua          # Main game screen
 ```
 
 ---
@@ -283,69 +326,12 @@ end
 | `wave_cleared` | `{waveNumber}` | Waves |
 | `life_lost` | `{remaining}` | Game |
 | `game_over` | `{reason}` | Game |
-| `prestige_available` | `{essence}` | Prestige |
 
 ---
 
 ## Config System
 
-All game tuning lives in `src/config.lua`.
-
-```lua
--- src/config.lua
-local Config = {}
-
--- Economy
-Config.STARTING_GOLD = 200
-Config.BASE_INCOME = 10
-Config.INCOME_TICK_SECONDS = 30
-
--- Towers
-Config.TOWERS = {
-    basic = {
-        name = "Turret",
-        cost = 100,
-        damage = 10,
-        range = 120,
-        fireRate = 1.0,
-        color = {0.0, 1.0, 0.0},
-    },
-    rapid = {
-        name = "Rapid",
-        cost = 150,
-        damage = 4,
-        range = 80,
-        fireRate = 4.0,
-        color = {0.0, 1.0, 1.0},
-    },
-    -- ...
-}
-
--- Enemies
-Config.CREEPS = {
-    triangle = {
-        name = "Triangle",
-        sides = 3,
-        hp = 30,
-        speed = 60,
-        reward = 5,
-        income = 5,
-        sendCost = 50,
-        color = {1.0, 0.3, 0.3},
-    },
-    -- ...
-}
-
--- Wave scaling
-Config.WAVE_BASE_ENEMIES = 3
-Config.WAVE_ENEMY_SCALING = 1  -- +1 enemy per wave
-
--- Grid
-Config.CELL_SIZE = 40
-Config.PLAY_AREA_RATIO = 0.70
-
-return Config
-```
+All game tuning lives in `src/config.lua`. See that file for current values.
 
 ### Accessing Config
 
@@ -444,77 +430,7 @@ StateMachine.transition("playing")
 
 ---
 
-## Testing Guidelines
-
-### What to Test
-
-- **Config values:** Sanity checks (no negative HP, etc.)
-- **Pure functions:** Pathfinding, damage calculation, economy math
-- **Edge cases:** Empty collections, zero values, max values
-
-### What NOT to Test (Yet)
-
-- Rendering
-- Input handling
-- LÖVE callbacks
-
-### Test Structure
-
-```lua
--- tests/economy_test.lua
-local Economy = require("src.systems.economy")
-local Config = require("src.config")
-
-local function testStartingGold()
-    Economy.init()
-    assert(Economy.getGold() == Config.STARTING_GOLD)
-end
-
-local function testSpendGold()
-    Economy.init()
-    Economy.addGold(100)
-    local success = Economy.spendGold(50)
-    assert(success == true)
-    assert(Economy.getGold() == Config.STARTING_GOLD + 50)
-end
-
-return {
-    testStartingGold,
-    testSpendGold,
-}
-```
-
----
-
-## Performance Guidelines
-
-### Do Now
-
-- Use local variables (not global lookups)
-- Cache repeated calculations
-- Remove dead entities promptly
-
-### Do Later (When Needed)
-
-- Object pooling for projectiles/particles
-- Spatial partitioning for collision
-- Flow field caching
-
-### Never Do
-
-- Premature optimization
-- Complex caching without measurement
-- "Clever" code that's hard to read
-
----
-
 ## Adding New Features
-
-### Before Adding
-
-1. Check if it's in `DESIGN.md`
-2. If not, ask: "Does this serve the core loop?"
-3. If unsure, don't add it
 
 ### Adding a New Tower
 
@@ -574,6 +490,48 @@ local gridX, gridY = Grid.toGrid(screenX, screenY)
 
 ---
 
+## Development Phases
+
+### Phase 1: Core Loop (Current)
+
+- [x] Grid system with tower placement
+- [x] 4 tower types (Turret, Rapid, Sniper, Cannon)
+- [x] 4 enemy types (Triangle, Square, Pentagon, Hexagon)
+- [x] A* pathfinding with flow fields
+- [x] Basic economy (gold, income ticks)
+- [x] Send-to-Void mechanic
+- [x] Wave spawning based on sends
+- [x] Win/lose condition (lives)
+- [x] Basic UI (tower panel, send panel, HUD)
+
+**Success Criteria:** Is the core loop fun? Is the send mechanic creating interesting decisions?
+
+### Phase 2: Progression
+
+- [ ] Prestige system
+- [ ] Void Essence currency
+- [ ] Permanent upgrades
+- [ ] Save/load
+- [ ] Basic offline progress
+
+### Phase 3: Polish
+
+- [ ] Screen shake and hit feedback
+- [ ] Particle effects
+- [ ] Sound effects
+- [ ] Visual improvements
+- [ ] Balance pass
+
+### Phase 4: Content & Release
+
+- [ ] Additional towers (if needed)
+- [ ] Additional enemies (if needed)
+- [ ] Achievements
+- [ ] Settings menu
+- [ ] Release build
+
+---
+
 ## Phase Gates
 
 Code quality requirements per phase:
@@ -600,7 +558,6 @@ Code quality requirements per phase:
 ### Phase 4 (Release)
 
 - [ ] All code documented
-- [ ] Luacheck passes
 - [ ] Tested on multiple machines
 
 ---
@@ -633,9 +590,45 @@ if love.system.getOS() == "Windows" then
 
 ---
 
+## Testing Guidelines
+
+### What to Test
+
+- **Config values:** Sanity checks (no negative HP, etc.)
+- **Pure functions:** Pathfinding, damage calculation, economy math
+- **Edge cases:** Empty collections, zero values, max values
+
+### What NOT to Test (Yet)
+
+- Rendering
+- Input handling
+- LÖVE callbacks
+
+---
+
+## Performance Guidelines
+
+### Do Now
+
+- Use local variables (not global lookups)
+- Cache repeated calculations
+- Remove dead entities promptly
+
+### Do Later (When Needed)
+
+- Object pooling for projectiles/particles
+- Spatial partitioning for collision
+- Flow field caching
+
+### Never Do
+
+- Premature optimization
+- Complex caching without measurement
+- "Clever" code that's hard to read
+
+---
+
 ## Getting Help
 
-- **Game Design Questions:** Check `DESIGN.md`
-- **Architecture Questions:** Check this file
 - **LÖVE2D Questions:** https://love2d.org/wiki
 - **Lua Questions:** https://www.lua.org/manual/5.1/
