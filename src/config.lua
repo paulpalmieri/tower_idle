@@ -11,8 +11,8 @@ local Config = {}
 
 Config.SCREEN_WIDTH = 1280
 Config.SCREEN_HEIGHT = 720
-Config.PLAY_AREA_RATIO = 0.70  -- Left 70% is play area
-Config.PANEL_RATIO = 0.30      -- Right 30% is UI panel
+Config.PLAY_AREA_RATIO = 0.35  -- Left 35% is play area
+Config.PANEL_RATIO = 0.65      -- Right 65% is UI panel
 
 -- =============================================================================
 -- GRID
@@ -26,10 +26,10 @@ Config.BASE_ROWS = 1           -- Bottom row is base zone
 -- ECONOMY
 -- =============================================================================
 
-Config.STARTING_GOLD = 200
+Config.STARTING_GOLD = 10000
 Config.STARTING_LIVES = 20
 Config.BASE_INCOME = 10
-Config.INCOME_TICK_SECONDS = 30
+Config.INCOME_TICK_SECONDS = 5
 Config.MAX_OFFLINE_HOURS = 4
 
 -- =============================================================================
@@ -37,6 +37,16 @@ Config.MAX_OFFLINE_HOURS = 4
 -- =============================================================================
 
 Config.TOWERS = {
+    wall = {
+        name = "Wall",
+        cost = 1,
+        damage = 0,
+        fireRate = 0,
+        range = 0,
+        projectileSpeed = 0,
+        color = {0.5, 0.5, 0.5},
+        description = "Blocks paths. Cannot attack.",
+    },
     basic = {
         name = "Turret",
         cost = 100,
@@ -139,17 +149,34 @@ Config.CREEPS = {
 -- WAVES
 -- =============================================================================
 
-Config.WAVE_DURATION = 20      -- Seconds between waves
+Config.WAVE_DURATION = 5       -- Seconds between waves
 Config.WAVE_BASE_ENEMIES = 3   -- Starting enemies per wave
 Config.WAVE_SCALING = 1        -- Additional enemies per wave
 Config.WAVE_SPAWN_INTERVAL = 0.5  -- Time between spawning each creep
 
--- Wave composition based on sent enemies
-Config.WAVE_SEND_RATIOS = {
-    triangle = 2,   -- 1 extra per 2 sent
-    square = 3,     -- 1 extra per 3 sent
-    pentagon = 4,   -- 1 extra per 4 sent
-    hexagon = 5,    -- 1 extra per 5 sent
+-- Wave composition based on anger level (replaces old send ratios)
+Config.WAVE_ANGER_COMPOSITION = {
+    [0] = { triangle = 3 },
+    [1] = { triangle = 4, square = 1 },
+    [2] = { triangle = 5, square = 2, pentagon = 1 },
+    [3] = { triangle = 6, square = 3, pentagon = 2, hexagon = 1 },
+}
+
+-- =============================================================================
+-- VOID
+-- =============================================================================
+
+Config.VOID = {
+    maxHealth = 100,
+    clickDamage = 1,
+    baseIncomePerClick = 5,
+    angerThresholds = {75, 50, 25},  -- Health thresholds that increase anger
+    maxAnger = 4,                     -- Maximum anger level (0-3 + permanent)
+    baseRadius = 60,
+    yOffset = 30,                     -- Distance from top of play area
+    pulseSpeed = 2,                   -- Pulse animation speed
+    pulseAmount = 0.1,                -- Pulse size variation (10%)
+    clickFlashDuration = 0.15,        -- Flash duration on click
 }
 
 -- =============================================================================
@@ -188,6 +215,19 @@ Config.COLORS = {
     textPrimary = {1.0, 1.0, 1.0},
     textSecondary = {0.6, 0.6, 0.6},
     textDisabled = {0.4, 0.4, 0.4},
+    -- Void colors (indexed by anger level 0-3)
+    void = {
+        [0] = {0.4, 0.2, 0.6},    -- Purple (calm)
+        [1] = {0.6, 0.2, 0.5},    -- Magenta (annoyed)
+        [2] = {0.8, 0.2, 0.3},    -- Red-purple (angry)
+        [3] = {1.0, 0.1, 0.1},    -- Red (furious)
+    },
+    voidGlow = {0.6, 0.3, 0.8, 0.3},
+    voidFlash = {1.0, 1.0, 1.0, 0.8},
+    voidHealthBar = {0.8, 0.2, 0.8},
+    voidHealthBarBg = {0.2, 0.1, 0.2},
+    angerPipEmpty = {0.3, 0.15, 0.3},
+    angerPipFilled = {1.0, 0.3, 0.1},
 }
 
 -- =============================================================================
@@ -217,5 +257,66 @@ Config.UI = {
         statsYOffset = 48,
     },
 }
+
+-- =============================================================================
+-- UPGRADES
+-- =============================================================================
+
+Config.UPGRADES = {
+    maxLevel = 5,
+    baseCost = {
+        range = 50,
+        fireRate = 75,
+        damage = 100,
+    },
+    costMultiplier = 1.5,  -- Each level costs 1.5x previous
+    bonusPerLevel = {
+        range = 0.15,      -- +15% per level
+        fireRate = 0.20,   -- +20% per level
+        damage = 0.25,     -- +25% per level
+    },
+    -- Panel upgrades (Void-related)
+    panel = {
+        autoClicker = {
+            name = "Auto-Clicker",
+            baseCost = 500,
+            costMultiplier = 2.0,
+            maxLevel = 5,
+            baseInterval = 2.0,       -- Seconds between auto-clicks at level 1
+            intervalReduction = 0.2,  -- Reduce interval by 0.2s per level
+        },
+    },
+}
+
+Config.COLORS.upgrade = {
+    range = {0.3, 0.8, 1.0},
+    fireRate = {1.0, 0.8, 0.2},
+    damage = {1.0, 0.4, 0.4},
+    tooltip = {0.1, 0.1, 0.15, 0.95},
+    tooltipBorder = {0.3, 0.8, 0.3},
+    selected = {0.0, 1.0, 0.0, 0.4},
+}
+
+Config.UI.tooltip = {
+    width = 180,
+    padding = 10,
+    buttonHeight = 35,
+    buttonSpacing = 5,
+    offsetX = 20,
+    offsetY = -10,
+}
+
+Config.UI.rangePreview = {
+    fillAlpha = 0.1,
+    strokeAlpha = 0.4,
+    strokeWidth = 2,
+}
+
+-- =============================================================================
+-- GAME SPEED
+-- =============================================================================
+
+Config.GAME_SPEEDS = {1, 5, 0}              -- x1, x5, paused
+Config.GAME_SPEED_LABELS = {"x1", "x5", "||"}  -- Display labels
 
 return Config

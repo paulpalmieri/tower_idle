@@ -16,12 +16,16 @@ function Tower:new(x, y, towerType, gridX, gridY)
     self.towerType = towerType
 
     local stats = Config.TOWERS[towerType]
-    self.damage = stats.damage
-    self.range = stats.range
-    self.fireRate = stats.fireRate
+    self.baseDamage = stats.damage
+    self.baseRange = stats.range
+    self.baseFireRate = stats.fireRate
     self.color = stats.color
     self.projectileSpeed = stats.projectileSpeed
     self.splashRadius = stats.splashRadius
+
+    -- Upgrade tracking
+    self.upgrades = { range = 0, fireRate = 0, damage = 0 }
+    self:recalculateStats()
 
     self.cooldown = 0
     self.target = nil
@@ -29,7 +33,45 @@ function Tower:new(x, y, towerType, gridX, gridY)
     self.dead = false
 end
 
+function Tower:recalculateStats()
+    local bonuses = Config.UPGRADES.bonusPerLevel
+    self.damage = self.baseDamage * (1 + self.upgrades.damage * bonuses.damage)
+    self.range = self.baseRange * (1 + self.upgrades.range * bonuses.range)
+    self.fireRate = self.baseFireRate * (1 + self.upgrades.fireRate * bonuses.fireRate)
+end
+
+function Tower:getUpgradeCost(stat)
+    local level = self.upgrades[stat]
+    if level >= Config.UPGRADES.maxLevel then
+        return nil  -- Maxed out
+    end
+    local baseCost = Config.UPGRADES.baseCost[stat]
+    return math.floor(baseCost * (Config.UPGRADES.costMultiplier ^ level))
+end
+
+function Tower:canUpgrade(stat)
+    return self.upgrades[stat] < Config.UPGRADES.maxLevel
+end
+
+function Tower:upgrade(stat)
+    if not self:canUpgrade(stat) then
+        return false
+    end
+    self.upgrades[stat] = self.upgrades[stat] + 1
+    self:recalculateStats()
+    return true
+end
+
+function Tower:getTotalUpgradeLevel()
+    return self.upgrades.damage + self.upgrades.range + self.upgrades.fireRate
+end
+
 function Tower:update(dt, creeps, projectiles)
+    -- Non-attacking towers (walls) skip combat logic
+    if not self.fireRate or self.fireRate == 0 then
+        return
+    end
+
     -- Decrement cooldown
     if self.cooldown > 0 then
         self.cooldown = self.cooldown - dt
@@ -75,6 +117,11 @@ function Tower:draw()
     -- Draw turret body (tower color)
     love.graphics.setColor(self.color)
     love.graphics.circle("fill", self.x, self.y, Config.TOWER_SIZE * 0.7)
+
+    -- Non-attacking towers (walls) don't have a barrel
+    if not self.fireRate or self.fireRate == 0 then
+        return
+    end
 
     -- Draw barrel toward rotation
     local barrelLength = Config.TOWER_SIZE * Config.TOWER_BARREL_LENGTH

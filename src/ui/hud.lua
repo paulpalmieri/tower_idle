@@ -9,7 +9,7 @@ function HUD.init()
     -- Nothing to init yet
 end
 
-function HUD.draw(economy, waves)
+function HUD.draw(economy, waves, speedLabel)
     local y = Config.SCREEN_HEIGHT - Config.UI.hudHeight + 15
 
     -- Gold
@@ -34,6 +34,12 @@ function HUD.draw(economy, waves)
     -- Wave
     love.graphics.setColor(Config.COLORS.textPrimary)
     love.graphics.print(string.format("WAVE: %d", waves.getWaveNumber()), 520, y)
+
+    -- Speed indicator
+    if speedLabel then
+        love.graphics.setColor(Config.COLORS.textSecondary)
+        love.graphics.print(string.format("SPEED: %s [S]", speedLabel), 620, y)
+    end
 end
 
 return HUD

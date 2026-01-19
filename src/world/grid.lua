@@ -108,7 +108,7 @@ function Grid.draw()
     end
 end
 
-function Grid.drawHover(mouseX, mouseY, canAfford)
+function Grid.drawHover(mouseX, mouseY, canAfford, towerType)
     local gridX, gridY = Grid.screenToGrid(mouseX, mouseY)
     if not Grid.isValidCell(gridX, gridY) then return end
 
@@ -122,6 +122,26 @@ function Grid.drawHover(mouseX, mouseY, canAfford)
         love.graphics.setColor(1, 0, 0, 0.3)
     end
     love.graphics.rectangle("fill", screenX + 1, screenY + 1, state.cellSize - 2, state.cellSize - 2)
+
+    -- Draw range preview for valid placements (non-wall towers)
+    if canPlace and towerType then
+        local towerStats = Config.TOWERS[towerType]
+        local range = towerStats and towerStats.range or 0
+        if range > 0 then
+            local centerX, centerY = Grid.gridToScreen(gridX, gridY)
+            local previewConfig = Config.UI.rangePreview
+            local towerColor = towerStats.color
+
+            -- Fill circle
+            love.graphics.setColor(towerColor[1], towerColor[2], towerColor[3], previewConfig.fillAlpha)
+            love.graphics.circle("fill", centerX, centerY, range)
+
+            -- Stroke circle
+            love.graphics.setColor(towerColor[1], towerColor[2], towerColor[3], previewConfig.strokeAlpha)
+            love.graphics.setLineWidth(previewConfig.strokeWidth)
+            love.graphics.circle("line", centerX, centerY, range)
+        end
+    end
 end
 
 -- Expose state for pathfinding
@@ -129,5 +149,14 @@ function Grid.getCells() return state.cells end
 function Grid.getCols() return state.cols end
 function Grid.getRows() return state.rows end
 function Grid.getBaseRow() return state.rows end
+
+-- Get spawn zone bounds (for Void entity)
+function Grid.getSpawnZoneBounds()
+    local x = state.offsetX
+    local y = state.offsetY
+    local width = state.cols * state.cellSize
+    local height = Config.SPAWN_ROWS * state.cellSize
+    return x, y, width, height
+end
 
 return Grid

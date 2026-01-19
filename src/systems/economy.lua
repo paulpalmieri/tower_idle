@@ -108,4 +108,10 @@ function Economy.loseLife()
     return false
 end
 
+-- Add gold from clicking the Void
+function Economy.voidClicked(amount)
+    state.gold = state.gold + amount
+    EventBus.emit("gold_changed", { amount = amount, total = state.gold })
+end
+
 return Economy

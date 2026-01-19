@@ -4,7 +4,6 @@
 local Config = require("src.config")
 local EventBus = require("src.core.event_bus")
 local Grid = require("src.world.grid")
-local Economy = require("src.systems.economy")
 local Creep = require("src.entities.creep")
 
 local Waves = {}
@@ -15,6 +14,7 @@ local state = {
     spawning = false,
     spawnQueue = {},
     spawnTimer = 0,
+    angerLevel = 0,  -- Current anger level from Void
 }
 
 function Waves.init()
@@ -23,23 +23,34 @@ function Waves.init()
     state.spawning = false
     state.spawnQueue = {}
     state.spawnTimer = 0
+    state.angerLevel = 0
 end
 
--- Build the spawn queue based on sent enemies
-local function buildQueue(sentCounts)
+-- Set the anger level (called when Void is clicked)
+function Waves.setAngerLevel(anger)
+    state.angerLevel = anger or 0
+end
+
+-- Build the spawn queue based on anger level
+local function buildQueue()
     local queue = {}
 
-    -- Base triangles for the wave (scales with wave number)
-    local baseCount = Config.WAVE_BASE_ENEMIES + (state.waveNumber * Config.WAVE_SCALING)
-    for _ = 1, baseCount do
-        table.insert(queue, "triangle")
+    -- Get composition for current anger level (cap at max defined level)
+    local maxAnger = 0
+    for level, _ in pairs(Config.WAVE_ANGER_COMPOSITION) do
+        if level > maxAnger then maxAnger = level end
     end
+    local effectiveAnger = math.min(state.angerLevel, maxAnger)
+    local composition = Config.WAVE_ANGER_COMPOSITION[effectiveAnger] or Config.WAVE_ANGER_COMPOSITION[0]
 
-    -- Add extras based on sent ratios
-    for creepType, ratio in pairs(Config.WAVE_SEND_RATIOS) do
-        local sentCount = sentCounts[creepType] or 0
-        local extras = math.floor(sentCount / ratio)
-        for _ = 1, extras do
+    -- Add base enemies that scale with wave number
+    local waveScaling = math.floor(state.waveNumber * Config.WAVE_SCALING)
+
+    -- Add enemies from composition
+    for creepType, count in pairs(composition) do
+        -- Scale count slightly with wave number
+        local scaledCount = count + math.floor(waveScaling * (count / 3))
+        for _ = 1, scaledCount do
             table.insert(queue, creepType)
         end
     end
@@ -54,16 +65,17 @@ local function buildQueue(sentCounts)
 end
 
 -- Start a new wave
-local function startWave(sentCounts)
+local function startWave()
     state.waveNumber = state.waveNumber + 1
     state.waveTimer = 0
     state.spawning = true
-    state.spawnQueue = buildQueue(sentCounts)
+    state.spawnQueue = buildQueue()
     state.spawnTimer = 0
 
     EventBus.emit("wave_started", {
         waveNumber = state.waveNumber,
         enemyCount = #state.spawnQueue,
+        angerLevel = state.angerLevel,
     })
 end
 
@@ -108,7 +120,7 @@ function Waves.update(dt, creeps)
 
         -- Start wave when timer expires
         if state.waveTimer >= Config.WAVE_DURATION then
-            startWave(Economy.getSent())
+            startWave()
         end
     end
 end
