@@ -142,6 +142,7 @@ Config.CREEPS = {
 Config.WAVE_DURATION = 20      -- Seconds between waves
 Config.WAVE_BASE_ENEMIES = 3   -- Starting enemies per wave
 Config.WAVE_SCALING = 1        -- Additional enemies per wave
+Config.WAVE_SPAWN_INTERVAL = 0.5  -- Time between spawning each creep
 
 -- Wave composition based on sent enemies
 Config.WAVE_SEND_RATIOS = {
@@ -158,6 +159,7 @@ Config.WAVE_SEND_RATIOS = {
 Config.PROJECTILE_SIZE = 4
 Config.DAMAGE_NUMBER_SPEED = 40   -- Rise speed
 Config.DAMAGE_NUMBER_DURATION = 0.6
+Config.CREEP_ROTATION_SPEED = 0.5  -- Rotation speed for visual effect
 
 -- =============================================================================
 -- PRESTIGE (Phase 2)
@@ -178,6 +180,8 @@ Config.COLORS = {
     spawnZone = {0.15, 0.02, 0.02},
     baseZone = {0.02, 0.15, 0.02},
     panel = {0.05, 0.05, 0.08},
+    panelBorder = {0, 0.5, 0},
+    towerBase = {0.15, 0.15, 0.2},
     gold = {1.0, 0.9, 0.2},
     income = {0.3, 0.8, 0.3},
     lives = {1.0, 0.3, 0.3},
@@ -195,6 +199,23 @@ Config.UI = {
     buttonHeight = 70,
     buttonSpacing = 10,
     hudHeight = 60,
+    panel = {
+        towerSectionY = 50,
+        enemySectionYOffset = 30,
+        buttonColors = {
+            selected = {0.1, 0.3, 0.1},
+            hovered = {0.15, 0.15, 0.2},
+            default = {0.08, 0.08, 0.12},
+            enemyHovered = {0.2, 0.1, 0.1},
+        },
+        iconXOffset = 25,
+        iconRadius = 12,
+        textXOffset = 45,
+        textYOffset = 10,
+        costYOffset = 30,
+        hotkeyXOffset = 35,
+        statsYOffset = 48,
+    },
 }
 
 return Config

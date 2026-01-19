@@ -29,7 +29,7 @@ function Creep:update(dt, grid, flowField)
     if self.dead then return end
 
     -- Rotate shape over time for visual interest
-    self.rotation = self.rotation + dt * 0.5
+    self.rotation = self.rotation + dt * Config.CREEP_ROTATION_SPEED
 
     -- Get current grid position
     local gridX, gridY = grid.screenToGrid(self.x, self.y)

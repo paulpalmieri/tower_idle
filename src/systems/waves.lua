@@ -3,6 +3,9 @@
 
 local Config = require("src.config")
 local EventBus = require("src.core.event_bus")
+local Grid = require("src.world.grid")
+local Economy = require("src.systems.economy")
+local Creep = require("src.entities.creep")
 
 local Waves = {}
 
@@ -13,8 +16,6 @@ local state = {
     spawnQueue = {},
     spawnTimer = 0,
 }
-
-local SPAWN_INTERVAL = 0.5  -- Time between spawning each creep
 
 function Waves.init()
     state.waveNumber = 0
@@ -67,13 +68,11 @@ local function startWave(sentCounts)
 end
 
 -- Spawn the next creep from the queue
-local function spawnNext(Grid, Game)
+local function spawnNext()
     if #state.spawnQueue == 0 then
         state.spawning = false
         return
     end
-
-    local Creep = require("src.entities.creep")
 
     -- Pop from queue
     local creepType = table.remove(state.spawnQueue, 1)
@@ -86,20 +85,16 @@ local function spawnNext(Grid, Game)
     local x, y = Grid.gridToScreen(spawnCol, spawnRow)
     local creep = Creep(x, y, creepType)
 
-    Game.addCreep(creep)
+    EventBus.emit("spawn_creep", { creep = creep })
 end
 
 function Waves.update(dt, creeps)
-    local Grid = require("src.world.grid")
-    local Game = require("src.init")
-    local Economy = require("src.systems.economy")
-
     if state.spawning then
         -- During spawning: spawn from queue at intervals
         state.spawnTimer = state.spawnTimer + dt
-        if state.spawnTimer >= SPAWN_INTERVAL then
-            state.spawnTimer = state.spawnTimer - SPAWN_INTERVAL
-            spawnNext(Grid, Game)
+        if state.spawnTimer >= Config.WAVE_SPAWN_INTERVAL then
+            state.spawnTimer = state.spawnTimer - Config.WAVE_SPAWN_INTERVAL
+            spawnNext()
         end
 
         -- Check if wave is clear (no more queue and no creeps alive)

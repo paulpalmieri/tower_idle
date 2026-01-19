@@ -316,16 +316,17 @@ end
 
 | Event | Data | Emitted By |
 |-------|------|------------|
-| `creep_killed` | `{creep, killer, position}` | Combat |
-| `creep_reached_base` | `{creep}` | Creep |
-| `tower_placed` | `{tower, gridX, gridY}` | Grid |
-| `tower_fired` | `{tower, target}` | Tower |
+| `creep_killed` | `{creep, reward, position}` | Game |
+| `creep_reached_base` | `{creep}` | Game |
+| `tower_placed` | `{tower, gridX, gridY}` | Game |
+| `spawn_creep` | `{creep}` | Waves |
+| `creep_sent` | `{type, income, totalSent}` | Economy |
 | `gold_changed` | `{amount, total}` | Economy |
-| `income_tick` | `{amount}` | Economy |
-| `wave_started` | `{waveNumber, composition}` | Waves |
+| `income_tick` | `{amount, total}` | Economy |
+| `wave_started` | `{waveNumber, enemyCount}` | Waves |
 | `wave_cleared` | `{waveNumber}` | Waves |
-| `life_lost` | `{remaining}` | Game |
-| `game_over` | `{reason}` | Game |
+| `life_lost` | `{remaining}` | Economy |
+| `game_over` | `{reason}` | Economy |
 
 ---
 
@@ -352,12 +353,17 @@ Entities are simple data + behavior objects.
 -- src/entities/tower.lua
 local Object = require("lib.classic")
 local Config = require("src.config")
+local Projectile = require("src.entities.projectile")
+local Combat = require("src.systems.combat")
 
 local Tower = Object:extend()
 
-function Tower:new(x, y, towerType)
+function Tower:new(x, y, towerType, gridX, gridY)
     self.x = x
     self.y = y
+    self.gridX = gridX
+    self.gridY = gridY
+    self.towerType = towerType
 
     local stats = Config.TOWERS[towerType]
     self.damage = stats.damage
@@ -370,29 +376,24 @@ function Tower:new(x, y, towerType)
     self.dead = false
 end
 
-function Tower:update(dt)
+function Tower:update(dt, creeps, projectiles)
     if self.cooldown > 0 then
         self.cooldown = self.cooldown - dt
     end
-end
 
-function Tower:canFire()
-    return self.cooldown <= 0 and self.target ~= nil
-end
+    -- Find target using Combat system
+    self.target = Combat.findTarget(self, creeps)
 
-function Tower:fire()
-    self.cooldown = 1 / self.fireRate
-    return {
-        x = self.x,
-        y = self.y,
-        target = self.target,
-        damage = self.damage,
-    }
+    -- Fire if ready
+    if self.cooldown <= 0 and self.target then
+        -- Create projectile and add to projectiles list
+        self.cooldown = 1 / self.fireRate
+    end
 end
 
 function Tower:draw()
-    love.graphics.setColor(self.color)
-    love.graphics.circle("fill", self.x, self.y, 16)
+    love.graphics.setColor(Config.COLORS.towerBase)
+    love.graphics.circle("fill", self.x, self.y, Config.TOWER_SIZE)
 end
 
 return Tower
@@ -482,10 +483,10 @@ local nested = table and table.nested and table.nested.value
 
 ```lua
 -- Grid to screen
-local screenX, screenY = Grid.toScreen(gridX, gridY)
+local screenX, screenY = Grid.gridToScreen(gridX, gridY)
 
 -- Screen to grid
-local gridX, gridY = Grid.toGrid(screenX, screenY)
+local gridX, gridY = Grid.screenToGrid(screenX, screenY)
 ```
 
 ---

@@ -12,6 +12,9 @@ local Waves = require("src.systems.waves")
 local Combat = require("src.systems.combat")
 local Pathfinding = require("src.systems.pathfinding")
 
+-- Entities
+local Tower = require("src.entities.tower")
+
 -- UI
 local HUD = require("src.ui.hud")
 local Panel = require("src.ui.panel")
@@ -69,6 +72,10 @@ function Game.setupEvents()
 
     EventBus.on("creep_reached_base", function(data)
         Economy.loseLife()
+    end)
+
+    EventBus.on("spawn_creep", function(data)
+        table.insert(state.creeps, data.creep)
     end)
 end
 
@@ -157,7 +164,6 @@ function Game.mousepressed(x, y, button)
     end
 
     -- Place tower
-    local Tower = require("src.entities.tower")
     local gridX, gridY = Grid.screenToGrid(x, y)
     local towerType = Panel.getSelectedTower()
     local cost = Config.TOWERS[towerType].cost
@@ -216,10 +222,6 @@ end
 
 function Game.getCreeps()
     return state.creeps
-end
-
-function Game.addCreep(creep)
-    table.insert(state.creeps, creep)
 end
 
 return Game

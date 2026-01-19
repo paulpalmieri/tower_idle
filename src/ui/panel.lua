@@ -34,7 +34,7 @@ function Panel.init(playAreaWidth, panelWidth, height)
     local buttonSpacing = Config.UI.buttonSpacing
     local buttonWidth = panelWidth - padding * 2
 
-    local towerStartY = 50  -- After "TOWERS" title
+    local towerStartY = Config.UI.panel.towerSectionY
 
     state.towerButtons = {}
     for i, towerType in ipairs(TOWER_ORDER) do
@@ -49,7 +49,7 @@ function Panel.init(playAreaWidth, panelWidth, height)
     end
 
     -- Build enemy button layouts (bottom half)
-    local enemyStartY = height / 2 + 30  -- After "SEND TO VOID" title
+    local enemyStartY = height / 2 + Config.UI.panel.enemySectionYOffset
 
     state.enemyButtons = {}
     for i, enemyType in ipairs(ENEMY_ORDER) do
@@ -130,7 +130,7 @@ function Panel.draw(economy)
     love.graphics.rectangle("fill", state.x, 0, state.width, state.height)
 
     -- Border
-    love.graphics.setColor(0, 0.5, 0)
+    love.graphics.setColor(Config.COLORS.panelBorder)
     love.graphics.setLineWidth(2)
     love.graphics.line(state.x, 0, state.x, state.height)
 
@@ -147,11 +147,11 @@ function Panel.draw(economy)
 
         -- Button background
         if isSelected then
-            love.graphics.setColor(0.1, 0.3, 0.1)
+            love.graphics.setColor(Config.UI.panel.buttonColors.selected)
         elseif isHovered and canAfford then
-            love.graphics.setColor(0.15, 0.15, 0.2)
+            love.graphics.setColor(Config.UI.panel.buttonColors.hovered)
         else
-            love.graphics.setColor(0.08, 0.08, 0.12)
+            love.graphics.setColor(Config.UI.panel.buttonColors.default)
         end
         love.graphics.rectangle("fill", btn.x, btn.y, btn.width, btn.height, 4)
 
@@ -163,14 +163,14 @@ function Panel.draw(economy)
         end
 
         -- Tower icon (colored circle)
-        local iconX = btn.x + 25
+        local iconX = btn.x + Config.UI.panel.iconXOffset
         local iconY = btn.y + btn.height / 2
         if canAfford then
             love.graphics.setColor(towerConfig.color)
         else
             love.graphics.setColor(0.3, 0.3, 0.3)
         end
-        love.graphics.circle("fill", iconX, iconY, 12)
+        love.graphics.circle("fill", iconX, iconY, Config.UI.panel.iconRadius)
 
         -- Tower name
         if canAfford then
@@ -178,7 +178,7 @@ function Panel.draw(economy)
         else
             love.graphics.setColor(Config.COLORS.textDisabled)
         end
-        love.graphics.print(towerConfig.name, btn.x + 45, btn.y + 10)
+        love.graphics.print(towerConfig.name, btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.textYOffset)
 
         -- Tower cost
         if canAfford then
@@ -186,16 +186,16 @@ function Panel.draw(economy)
         else
             love.graphics.setColor(Config.COLORS.textDisabled)
         end
-        love.graphics.print(towerConfig.cost .. "g", btn.x + 45, btn.y + 30)
+        love.graphics.print(towerConfig.cost .. "g", btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.costYOffset)
 
         -- Hotkey
         love.graphics.setColor(Config.COLORS.textSecondary)
-        love.graphics.print("[" .. btn.hotkey .. "]", btn.x + btn.width - 35, btn.y + 10)
+        love.graphics.print("[" .. btn.hotkey .. "]", btn.x + btn.width - Config.UI.panel.hotkeyXOffset, btn.y + Config.UI.panel.textYOffset)
 
         -- Stats (damage/range)
         love.graphics.setColor(Config.COLORS.textSecondary)
         local statsText = "DMG:" .. towerConfig.damage .. " RNG:" .. towerConfig.range
-        love.graphics.print(statsText, btn.x + 45, btn.y + 48)
+        love.graphics.print(statsText, btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.statsYOffset)
     end
 
     -- SEND TO VOID title
@@ -210,19 +210,19 @@ function Panel.draw(economy)
 
         -- Button background
         if isHovered and canAfford then
-            love.graphics.setColor(0.2, 0.1, 0.1)
+            love.graphics.setColor(Config.UI.panel.buttonColors.enemyHovered)
         else
-            love.graphics.setColor(0.08, 0.08, 0.12)
+            love.graphics.setColor(Config.UI.panel.buttonColors.default)
         end
         love.graphics.rectangle("fill", btn.x, btn.y, btn.width, btn.height, 4)
 
         -- Enemy shape icon
-        local iconX = btn.x + 25
+        local iconX = btn.x + Config.UI.panel.iconXOffset
         local iconY = btn.y + btn.height / 2
         if canAfford then
-            drawEnemyShape(iconX, iconY, 12, creepConfig.sides, creepConfig.color)
+            drawEnemyShape(iconX, iconY, Config.UI.panel.iconRadius, creepConfig.sides, creepConfig.color)
         else
-            drawEnemyShape(iconX, iconY, 12, creepConfig.sides, {0.3, 0.3, 0.3})
+            drawEnemyShape(iconX, iconY, Config.UI.panel.iconRadius, creepConfig.sides, {0.3, 0.3, 0.3})
         end
 
         -- Enemy name
@@ -231,7 +231,7 @@ function Panel.draw(economy)
         else
             love.graphics.setColor(Config.COLORS.textDisabled)
         end
-        love.graphics.print(creepConfig.name, btn.x + 45, btn.y + 10)
+        love.graphics.print(creepConfig.name, btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.textYOffset)
 
         -- Send cost
         if canAfford then
@@ -239,20 +239,20 @@ function Panel.draw(economy)
         else
             love.graphics.setColor(Config.COLORS.textDisabled)
         end
-        love.graphics.print(creepConfig.sendCost .. "g", btn.x + 45, btn.y + 30)
+        love.graphics.print(creepConfig.sendCost .. "g", btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.costYOffset)
 
         -- Income gain
         love.graphics.setColor(Config.COLORS.income)
-        love.graphics.print("+" .. creepConfig.income .. "/tick", btn.x + 100, btn.y + 30)
+        love.graphics.print("+" .. creepConfig.income .. "/tick", btn.x + 100, btn.y + Config.UI.panel.costYOffset)
 
         -- Hotkey
         love.graphics.setColor(Config.COLORS.textSecondary)
-        love.graphics.print("[" .. btn.hotkey .. "]", btn.x + btn.width - 35, btn.y + 10)
+        love.graphics.print("[" .. btn.hotkey .. "]", btn.x + btn.width - Config.UI.panel.hotkeyXOffset, btn.y + Config.UI.panel.textYOffset)
 
         -- Stats (HP/speed)
         love.graphics.setColor(Config.COLORS.textSecondary)
         local statsText = "HP:" .. creepConfig.hp .. " SPD:" .. creepConfig.speed
-        love.graphics.print(statsText, btn.x + 45, btn.y + 48)
+        love.graphics.print(statsText, btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.statsYOffset)
     end
 end
 

@@ -3,6 +3,8 @@
 
 local Object = require("lib.classic")
 local Config = require("src.config")
+local Projectile = require("src.entities.projectile")
+local Combat = require("src.systems.combat")
 
 local Tower = Object:extend()
 
@@ -28,31 +30,13 @@ function Tower:new(x, y, towerType, gridX, gridY)
 end
 
 function Tower:update(dt, creeps, projectiles)
-    local Projectile = require("src.entities.projectile")
-
     -- Decrement cooldown
     if self.cooldown > 0 then
         self.cooldown = self.cooldown - dt
     end
 
     -- Find closest non-dead creep within range
-    local closestCreep = nil
-    local closestDist = math.huge
-
-    for _, creep in ipairs(creeps) do
-        if not creep.dead then
-            local dx = creep.x - self.x
-            local dy = creep.y - self.y
-            local dist = math.sqrt(dx * dx + dy * dy)
-
-            if dist <= self.range and dist < closestDist then
-                closestDist = dist
-                closestCreep = creep
-            end
-        end
-    end
-
-    self.target = closestCreep
+    self.target = Combat.findTarget(self, creeps)
 
     -- Rotate barrel toward target
     if self.target then
@@ -85,7 +69,7 @@ end
 
 function Tower:draw()
     -- Draw base circle (dark)
-    love.graphics.setColor(0.15, 0.15, 0.2)
+    love.graphics.setColor(Config.COLORS.towerBase)
     love.graphics.circle("fill", self.x, self.y, Config.TOWER_SIZE)
 
     -- Draw turret body (tower color)

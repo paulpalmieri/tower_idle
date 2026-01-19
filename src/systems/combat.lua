@@ -19,7 +19,7 @@ end
 
 function Combat.findTarget(tower, creeps)
     local closest = nil
-    local closestDist = tower.range + 1
+    local closestDist = math.huge
 
     for _, creep in ipairs(creeps) do
         if not creep.dead then
