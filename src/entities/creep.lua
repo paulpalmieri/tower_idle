@@ -13,6 +13,9 @@ local Creep = Object:extend()
 -- Unique seed counter for each creep instance
 local seedCounter = 0
 
+-- Perspective scale for ground elements (must match ground_effects.lua)
+local PERSPECTIVE_Y_SCALE = 0.9
+
 function Creep:new(x, y, creepType)
     self.x = x
     self.y = y
@@ -556,11 +559,12 @@ function Creep:draw()
     -- Skip if fully invisible
     if scale <= 0 or alpha <= 0.01 then return end
 
-    -- Draw shadow (ground feel)
+    -- Draw shadow (ground feel) with perspective
     love.graphics.setBlendMode("alpha")
     love.graphics.setColor(0, 0, 0, 0.35)
-    local shadowWidth = self.size * 1.5
-    local shadowHeight = self.size * 0.4
+    local shadowSize = self.size * 1.2
+    local shadowWidth = shadowSize
+    local shadowHeight = shadowSize * PERSPECTIVE_Y_SCALE
     local shadowY = self.y + self.size * 1.3
     love.graphics.ellipse("fill", self.x, shadowY, shadowWidth, shadowHeight)
 
