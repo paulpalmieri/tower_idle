@@ -1,12 +1,11 @@
 -- src/entities/void.lua
 -- The Void Portal entity: circular procedural pixel art portal
--- Uses the same rendering approach as creeps for visual consistency
+-- Uses click-based anger system with 4 tiers
 
 local Object = require("lib.classic")
 local Config = require("src.config")
 local EventBus = require("src.core.event_bus")
 local Procedural = require("src.rendering.procedural")
-local Settings = require("src.ui.settings")
 
 local Void = Object:extend()
 
@@ -15,22 +14,22 @@ function Void:new(x, y)
     self.x = x
     self.y = y
 
-    -- Health state
-    self.maxHealth = Config.VOID.maxHealth
-    self.health = self.maxHealth
+    -- Click-based anger state
+    self.clickCount = 0
+    self.maxClicks = Config.VOID.maxClicks
+    self.currentTier = 0
+    self.redBossesSpawned = false  -- Track if tier 4 bosses were spawned
 
-    -- Anger state
-    self.permanentAnger = 0
-    self.currentAnger = 0
+    -- Threshold pulse animation
+    self.thresholdPulseTimer = 0
+    self.thresholdPulseActive = false
 
     -- Animation state
     self.clickFlash = 0
     self.time = 0
 
-    -- Size state (for growth animation)
+    -- Size state (fixed, no growth)
     self.size = Config.VOID_PORTAL.baseSize
-    self.targetSize = Config.VOID_PORTAL.baseSize
-    self.maxSize = Config.VOID_PORTAL.maxSize
 
     -- Pixel art scale (size of each "pixel")
     self.pixelSize = Config.VOID_PORTAL.pixelSize
@@ -41,6 +40,10 @@ function Void:new(x, y)
     -- Spawn animation tracking
     self.activeSpawns = {}
     self.spawnParticles = {}
+
+    -- Outward spewing particles
+    self.spewParticles = {}
+    self:spawnSpewParticles()
 
     -- Generate pixel pool for creep-style rendering
     self:generatePixels()
@@ -107,16 +110,36 @@ function Void:generatePixels()
     end
 end
 
+function Void:spawnSpewParticles()
+    local cfg = Config.VOID_PORTAL.spewParticles
+    if not cfg then return end
+    for i = 1, cfg.count do
+        self:spawnSpewParticle()
+    end
+end
+
+function Void:spawnSpewParticle()
+    local cfg = Config.VOID_PORTAL.spewParticles
+    if not cfg then return end
+    local angle = math.random() * math.pi * 2
+    -- Start from core area
+    local dist = self.size * (cfg.coreRadius * (0.8 + math.random() * 0.4))
+
+    table.insert(self.spewParticles, {
+        angle = angle,
+        dist = dist,
+        speed = cfg.speed * (0.7 + math.random() * 0.6),
+        brightness = 0.4 + math.random() * 0.5,
+        maxDist = self.size * cfg.maxRadius,
+    })
+end
+
 function Void:update(dt)
     self.time = self.time + dt
 
-    -- Animated growth toward target
-    if self.size ~= self.targetSize then
-        local growthSpeed = Config.VOID_PORTAL.growthSpeed
-        if self.size < self.targetSize then
-            self.size = math.min(self.targetSize, self.size + growthSpeed * dt)
-        end
-        self:generatePixels()
+    -- Update threshold pulse animation
+    if self.thresholdPulseActive then
+        self:updateThresholdPulse(dt)
     end
 
     -- Decay click flash
@@ -124,6 +147,21 @@ function Void:update(dt)
         self.clickFlash = self.clickFlash - dt / Config.VOID.clickFlashDuration
         if self.clickFlash < 0 then
             self.clickFlash = 0
+        end
+    end
+
+    -- Update spew particles (move outward)
+    local spewCfg = Config.VOID_PORTAL.spewParticles
+    if spewCfg then
+        for i = #self.spewParticles, 1, -1 do
+            local p = self.spewParticles[i]
+            p.dist = p.dist + p.speed * dt
+
+            -- Respawn when reaching max distance
+            if p.dist > p.maxDist then
+                table.remove(self.spewParticles, i)
+                self:spawnSpewParticle()
+            end
         end
     end
 
@@ -178,67 +216,119 @@ function Void:registerSpawn(creep)
     table.insert(self.activeSpawns, creep)
 end
 
--- Deal damage to the Void and return income earned
-function Void:click(damage, income)
-    damage = damage or Config.VOID.clickDamage
-    income = income or Config.VOID.baseIncomePerClick
+-- Update tier based on click count thresholds
+function Void:updateTier()
+    local thresholds = Config.VOID.angerThresholds
+    local maxTier = #thresholds  -- Cap at number of thresholds (4)
+    local newTier = 0
 
-    self.health = self.health - damage
+    for i, threshold in ipairs(thresholds) do
+        if self.clickCount >= threshold then
+            newTier = i
+        end
+    end
+
+    -- Cap tier at max
+    newTier = math.min(newTier, maxTier)
+
+    -- Check if tier increased
+    if newTier > self.currentTier then
+        self.currentTier = newTier
+        self:triggerThresholdPulse()
+
+        -- At max tier (4), spawn red bosses (only once)
+        if self.currentTier >= maxTier and not self.redBossesSpawned then
+            self:spawnRedBosses()
+        end
+    end
+end
+
+-- Trigger the threshold pulse animation
+function Void:triggerThresholdPulse()
+    self.thresholdPulseTimer = 0
+    self.thresholdPulseActive = true
+end
+
+-- Update threshold pulse timer
+function Void:updateThresholdPulse(dt)
+    local cfg = Config.VOID.thresholdPulse
+    self.thresholdPulseTimer = self.thresholdPulseTimer + dt
+
+    if self.thresholdPulseTimer >= cfg.duration then
+        self.thresholdPulseActive = false
+        self.thresholdPulseTimer = 0
+    end
+end
+
+-- Get scale multiplier for threshold pulse
+function Void:getThresholdPulseScale()
+    if not self.thresholdPulseActive then
+        return 1.0
+    end
+
+    local cfg = Config.VOID.thresholdPulse
+    local progress = self.thresholdPulseTimer / cfg.duration
+    -- Pulsing sine wave that fades out
+    local pulse = math.sin(progress * cfg.speed * math.pi) * (1.0 - progress)
+    return 1.0 + cfg.scaleAmount * pulse
+end
+
+-- Spawn two red bosses at tier 4 (only once per game)
+function Void:spawnRedBosses()
+    self.redBossesSpawned = true
+    EventBus.emit("spawn_red_bosses", { count = 2 })
+end
+
+-- Click the Void and return income earned
+function Void:click()
+    local income = Config.VOID.baseIncomePerClick
+
+    -- Increment click counter (capped at maxClicks for display)
+    if self.clickCount < self.maxClicks then
+        self.clickCount = self.clickCount + 1
+        -- Check for tier changes (only while not at max)
+        self:updateTier()
+    end
+    -- After max clicks, clicking still works but anger stays at tier 4
 
     -- Trigger click flash
     self.clickFlash = 1
 
-    -- Trigger growth (permanent, no shrink)
-    local growth = damage * Config.VOID_PORTAL.growthPerDamage
-    self.targetSize = math.min(self.maxSize, self.targetSize + growth)
-
-    -- Calculate current anger from thresholds
-    self:updateAnger()
-
-    -- Check for reset
-    if self.health <= 0 then
-        self:reset()
-    end
-
     -- Emit event
     EventBus.emit("void_clicked", {
-        damage = damage,
         income = income,
-        health = self.health,
-        maxHealth = self.maxHealth,
-        angerLevel = self:getAngerLevel(),
+        clickCount = self.clickCount,
+        maxClicks = self.maxClicks,
+        tier = self.currentTier,
     })
 
     return income
 end
 
--- Calculate anger from health thresholds
-function Void:updateAnger()
-    local thresholdAnger = 0
-    for _, threshold in ipairs(Config.VOID.angerThresholds) do
-        if self.health <= threshold then
-            thresholdAnger = thresholdAnger + 1
-        end
-    end
-    self.currentAnger = thresholdAnger
+-- Getters for click-based system
+function Void:getClickCount()
+    return self.clickCount
 end
 
--- Get total anger level (threshold + permanent)
+function Void:getMaxClicks()
+    return self.maxClicks
+end
+
+function Void:getClickPercent()
+    return self.clickCount / self.maxClicks
+end
+
+function Void:getTier()
+    return self.currentTier
+end
+
+function Void:hasSpawnedRedBosses()
+    return self.redBossesSpawned
+end
+
+-- Get total anger level (for color calculations)
 function Void:getAngerLevel()
-    return math.min(self.currentAnger + self.permanentAnger, #Config.COLORS.void - 1)
-end
-
--- Reset Void when health reaches 0
-function Void:reset()
-    self.permanentAnger = self.permanentAnger + 1
-    self.health = self.maxHealth
-    self.currentAnger = 0
-    -- NOTE: Do NOT reset targetSize or size (permanent growth)
-
-    EventBus.emit("void_reset", {
-        permanentAnger = self.permanentAnger,
-        angerLevel = self:getAngerLevel(),
-    })
+    return math.min(self.currentTier, #Config.COLORS.void - 1)
 end
 
 -- Check if a point is inside the Void (circular click detection)
@@ -246,18 +336,6 @@ function Void:isPointInside(px, py)
     local dx = px - self.x
     local dy = py - self.y
     return (dx * dx + dy * dy) <= (self.size * self.size)
-end
-
-function Void:getHealth()
-    return self.health
-end
-
-function Void:getMaxHealth()
-    return self.maxHealth
-end
-
-function Void:getHealthPercent()
-    return self.health / self.maxHealth
 end
 
 function Void:draw()
@@ -268,112 +346,74 @@ function Void:draw()
     local anger = self:getAngerLevel()
     local radius = self.size
 
-    -- Draw shadow below portal
-    local shadowCfg = cfg.shadow
-    love.graphics.setColor(0, 0, 0, shadowCfg.alpha)
-    local shadowWidth = radius * shadowCfg.width
-    local shadowHeight = radius * shadowCfg.height
-    local shadowY = self.y + radius * shadowCfg.offsetY
-    love.graphics.ellipse("fill", self.x, shadowY, shadowWidth, shadowHeight)
+    -- Apply threshold pulse scale
+    local pulseScale = self:getThresholdPulseScale()
+    radius = radius * pulseScale
 
-    -- OPTIMIZATION: Pre-compute time-based values outside loop
+    -- Draw flattened ellipse shadow below portal
+    local shadowCfg = cfg.shadow
+    local shadowColor = shadowCfg.color or {0, 0, 0}
+    local shadowY = self.y + radius + shadowCfg.offsetY
+    local shadowRadiusX = radius * shadowCfg.width
+    local shadowRadiusY = radius * shadowCfg.height  -- Flattened (0.9 perspective ratio)
+    love.graphics.setColor(shadowColor[1], shadowColor[2], shadowColor[3], shadowCfg.alpha)
+    love.graphics.ellipse("fill", self.x, shadowY, shadowRadiusX, shadowRadiusY)
+
+    -- Pre-compute time-based values outside loop
     local wobbleTime = t * cfg.wobbleSpeed
-    local baseN1 = Procedural.fbm(t * 0.8, t * 0.2, self.seed, 2)
-    local baseN2 = Procedural.fbm(-t * 0.4, t * 0.6, self.seed + 50, 2)
     local sparkleTimeX = math.floor(t * 8)
     local sparkleTimeY = math.floor(t * 5)
     local sparkleThreshold = cfg.sparkleThreshold or 0.96
 
-    -- Draw each pixel with animated void effects (matching Creep:draw)
+    -- Draw each pixel with animated void effects (matching ExitPortal:draw)
     for _, p in ipairs(self.pixels) do
-        -- OPTIMIZATION: Use pre-computed wobblePhase instead of fbm per pixel
         local wobbleNoise = math.sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
         local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
 
         -- Skip pixels outside the current animated boundary
-        if p.dist >= animatedEdgeRadius then
+        if p.dist * pulseScale >= animatedEdgeRadius then
             goto continue
         end
 
-        -- Determine if this pixel is near the edge (for glow effect)
-        local isEdge = p.dist > animatedEdgeRadius - ps * 1.5
+        local isEdge = p.dist * pulseScale > animatedEdgeRadius - ps * 1.5
+        local screenX = self.x + p.relX * pulseScale - ps / 2
+        local screenY = self.y + p.relY * pulseScale - ps / 2
 
-        -- Calculate screen position (portal always at full size, no scaling)
-        local screenX = self.x + p.relX - ps / 2
-        local screenY = self.y + p.relY - ps / 2
+        -- Check if in squared core region (pitch black center)
+        local inCore = math.abs(p.relX) < cfg.coreSize and math.abs(p.relY) < cfg.coreSize
 
-        -- OPTIMIZATION: Use per-void base noise + per-pixel variation
-        local n1 = baseN1 + p.rnd * 0.3 + p.distNorm * 0.2
-        local n2 = baseN2 + p.rnd2 * 0.2
-        local n3 = p.rnd
-
-        -- Swirling pattern (cheap - just sin)
-        local swirl = math.sin(p.angle * 3 + t * cfg.swirlSpeed + p.distNorm * 4) * 0.5 + 0.5
-
-        -- Random sparkles - use pre-computed time values
-        local sparkle = Procedural.hash(p.px + sparkleTimeX, p.py + sparkleTimeY, self.seed + 333)
-        local isSpark = sparkle > sparkleThreshold
-
-        -- Color calculation
         local r, g, b
 
-        if isSpark then
-            -- Bright sparkle
+        -- Sparkles
+        local sparkle = Procedural.hash(p.px + sparkleTimeX, p.py + sparkleTimeY, self.seed + 333)
+        if sparkle > sparkleThreshold then
             r, g, b = colors.sparkle[1], colors.sparkle[2], colors.sparkle[3]
+        elseif inCore then
+            -- Deep void core (pitch black)
+            local n = Procedural.hash(p.px + math.floor(t * 2), p.py, self.seed) * 0.01
+            r = colors.core[1] + n
+            g = colors.core[2] + n * 0.5
+            b = colors.core[3] + n
         elseif isEdge then
-            -- Edge glow - brighter purple
+            -- Edge glow
             local pulse = math.sin(t * cfg.pulseSpeed + p.angle * 2) * 0.3 + 0.7
             r = colors.edgeGlow[1] * pulse
             g = colors.edgeGlow[2] * pulse
             b = colors.edgeGlow[3] * pulse
         else
-            -- Interior void texture
-            local v = n1 * 0.5 + n2 * 0.3 + swirl * 0.2
-
-            -- Interpolate between core and mid based on noise and distance
-            local blend = v + p.distNorm * 0.3
-            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * blend + p.rnd * 0.05
-            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * blend + p.rnd2 * 0.02
-            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * blend + p.rnd * 0.1
-
-            -- Random darker spots
-            if p.rnd > 0.85 then
-                r, g, b = r * 0.5, g * 0.5, b * 0.7
-            end
-
-            -- Random brighter purple tints
-            if p.rnd2 > 0.8 then
-                r = r + 0.08
-                b = b + 0.12
-            end
-
-            -- OPTIMIZATION: Simplified tear streaks using pre-computed values
-            local tearBase = p.rnd * 0.5 + p.rnd2 * 0.3 + math.sin(p.py * 0.5 + t * 0.5) * 0.2
-            if tearBase > 0.58 and p.rnd > 0.4 then
-                local bright = (tearBase - 0.58) * 2 + n3 * 0.2
-                r = r + bright * 0.3
-                b = b + bright * 0.4
-            end
+            -- Interior (dark purple)
+            local swirl = math.sin(p.angle * 3 + t * cfg.swirlSpeed + p.distNorm * 4) * 0.5 + 0.5
+            local v = p.rnd * 0.3 + swirl * 0.2 + p.distNorm * 0.3
+            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * v
+            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * v
+            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * v
         end
-
-        -- Pulsing glow
-        local pulse = math.sin(t * cfg.pulseSpeed + p.distNorm * 3 + p.rnd * 4) * 0.06
-        r = math.max(0, math.min(1, r + pulse))
-        b = math.max(0, math.min(1, b + pulse * 0.5))
 
         -- Anger-based color shift (redder with more anger)
         if anger > 0 then
             local angerShift = anger * 0.08
             r = math.min(1, r + angerShift)
             g = math.max(0, g - angerShift * 0.3)
-        end
-
-        -- Self-illumination: boost brightness when lighting is enabled
-        if Settings.isLightingEnabled() then
-            local boost = Config.LIGHTING.selfIllumination and Config.LIGHTING.selfIllumination.void or 1.4
-            r = math.min(1, r * boost)
-            g = math.min(1, g * boost)
-            b = math.min(1, b * boost)
         end
 
         love.graphics.setColor(r, g, b)
@@ -385,7 +425,26 @@ function Void:draw()
     -- Click flash overlay (circular)
     if self.clickFlash > 0 then
         love.graphics.setColor(0.8, 0.5, 1, self.clickFlash * 0.5)
-        love.graphics.circle("fill", self.x, self.y, self.size)
+        love.graphics.circle("fill", self.x, self.y, self.size * pulseScale)
+    end
+
+end
+
+-- Draw spew particles (outward from portal)
+function Void:drawSpewParticles()
+    local cfg = Config.VOID_PORTAL.spewParticles
+    if not cfg then return end
+    local ps = cfg.size
+
+    for _, p in ipairs(self.spewParticles) do
+        local x = self.x + math.cos(p.angle) * p.dist
+        local y = self.y + math.sin(p.angle) * p.dist
+        local distNorm = (p.dist - self.size * cfg.coreRadius) / (p.maxDist - self.size * cfg.coreRadius)
+        distNorm = math.max(0, math.min(1, distNorm))
+        local alpha = p.brightness * (1 - distNorm * 0.7)  -- Fade as moves away
+
+        love.graphics.setColor(cfg.color[1], cfg.color[2], cfg.color[3], alpha)
+        love.graphics.rectangle("fill", x - ps/2, y - ps/2, ps, ps)
     end
 end
 
@@ -485,92 +544,13 @@ function Void:drawSpawnParticles()
     end
 end
 
-function Void:drawUI()
-    -- Health bar below the portal
-    local barWidth = self.size * 2
-    local barHeight = 6
-    local barX = self.x - barWidth / 2
-    local barY = self.y + self.size + 10
-
-    -- Background
-    love.graphics.setColor(0, 0, 0, 0.7)
-    love.graphics.rectangle("fill", barX - 1, barY - 1, barWidth + 2, barHeight + 2)
-
-    -- Health fill
-    local healthPercent = self.health / self.maxHealth
-    local r = 0.5 + (1 - healthPercent) * 0.5
-    local g = 0.1
-    local b = 0.6 + healthPercent * 0.2
-    love.graphics.setColor(r, g, b)
-    love.graphics.rectangle("fill", barX, barY, barWidth * healthPercent, barHeight)
-
-    -- Border
-    love.graphics.setColor(0.4, 0.2, 0.5)
-    love.graphics.setLineWidth(1)
-    love.graphics.rectangle("line", barX, barY, barWidth, barHeight)
-
-    -- Health text
-    love.graphics.setColor(1, 1, 1, 0.9)
-    local healthText = self.health .. "/" .. self.maxHealth
-    love.graphics.printf(healthText, barX, barY - 12, barWidth, "center")
-
-    -- Anger pips
-    local pipSize = 5
-    local pipSpacing = 8
-    local totalPips = #Config.VOID.angerThresholds
-    local pipsWidth = totalPips * pipSpacing
-    local pipStartX = self.x - pipsWidth / 2
-    local pipY = barY - 26
-
-    for i = 1, totalPips do
-        local pipX = pipStartX + (i - 1) * pipSpacing
-        local isFilled = i <= self.currentAnger
-
-        if isFilled then
-            love.graphics.setColor(1, 0.3, 0.1)
-        else
-            love.graphics.setColor(0.3, 0.15, 0.3)
-        end
-        love.graphics.rectangle("fill", pipX, pipY, pipSize, pipSize)
-    end
-
-    -- Permanent anger
-    if self.permanentAnger > 0 then
-        love.graphics.setColor(1, 0.3, 0.1)
-        love.graphics.print("+" .. self.permanentAnger, pipStartX + pipsWidth + 3, pipY - 1)
-    end
+-- Get glow parameters for the bloom system
+-- Returns nil to disable bloom on enemy void portal
+function Void:getGlowParams()
+    return nil
 end
 
--- Get light parameters for the lighting system
-function Void:getLightParams()
-    local lightingCfg = Config.LIGHTING
-    local anger = self:getAngerLevel()
-
-    -- Get color based on anger level
-    local color = lightingCfg.colors.void[anger] or lightingCfg.colors.void[0]
-
-    -- Calculate pulsing intensity
-    local intensityCfg = lightingCfg.intensities.void
-    local minIntensity = intensityCfg.min or 2.0
-    local maxIntensity = intensityCfg.max or 3.5
-    local pulse1 = math.sin(self.time * 2) * 0.5 + 0.5
-    local pulse2 = math.sin(self.time * 3.7) * 0.3 + 0.7
-    local pulse = pulse1 * pulse2
-    local intensity = minIntensity + (maxIntensity - minIntensity) * pulse
-
-    -- Strong boost with anger
-    intensity = intensity * (1 + anger * 0.3)
-
-    return {
-        x = self.x,
-        y = self.y,
-        radius = lightingCfg.radii.void or 700,
-        color = color,
-        intensity = intensity,
-        pulse = true,
-        pulseSpeed = 2.5 + anger * 0.8,
-        pulseAmount = 0.4 + anger * 0.2,
-    }
-end
+-- Alias for backward compatibility
+Void.getLightParams = Void.getGlowParams
 
 return Void

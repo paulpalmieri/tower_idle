@@ -967,12 +967,16 @@ local function drawVoidTurret(x, y, variant, variantIndex, rotation, recoilOffse
         local cached = getCachedBase(seed, level)
         if not cached.rendered then
             -- Render base to canvas once
+            -- Must reset transform to avoid scale/translate affecting canvas rendering
             local prevCanvas = love.graphics.getCanvas()
+            love.graphics.push()
+            love.graphics.origin()  -- Reset transform to identity
             love.graphics.setCanvas(cached.canvas)
             love.graphics.clear(0, 0, 0, 0)
             -- Draw base centered in canvas
             drawStoneBase(BASE_CANVAS_SIZE / 2, BASE_CANVAS_SIZE / 2, ps, 0, seed, level)
             love.graphics.setCanvas(prevCanvas)
+            love.graphics.pop()  -- Restore previous transform
             cached.rendered = true
         end
         -- Draw cached base canvas

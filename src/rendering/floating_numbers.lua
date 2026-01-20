@@ -41,8 +41,14 @@ local function easeInQuad(t)
     return t * t
 end
 
+-- Number types for color selection
+FloatingNumbers.TYPE_DAMAGE = "damage"
+FloatingNumbers.TYPE_GOLD = "gold"
+FloatingNumbers.TYPE_SHARD = "shard"
+FloatingNumbers.TYPE_CRYSTAL = "crystal"
+
 -- Create a new floating number
-local function createNumber(x, y, value, isDamage)
+local function createNumber(x, y, value, numberType)
     local cfg = Config.FLOATING_NUMBERS
     local style = FloatingNumbers.STYLES[state.currentStyle]
 
@@ -52,7 +58,7 @@ local function createNumber(x, y, value, isDamage)
         startX = x,
         startY = y,
         value = value,
-        isDamage = isDamage,
+        numberType = numberType or FloatingNumbers.TYPE_DAMAGE,
         time = 0,
         duration = cfg.duration,
         style = style,
@@ -69,7 +75,7 @@ function FloatingNumbers.init()
     -- Listen for damage events
     EventBus.on("creep_hit", function(data)
         if data.damage and data.damage > 0 then
-            createNumber(data.position.x, data.position.y, math.floor(data.damage), true)
+            createNumber(data.position.x, data.position.y, math.floor(data.damage), FloatingNumbers.TYPE_DAMAGE)
         end
     end)
 
@@ -78,7 +84,23 @@ function FloatingNumbers.init()
         if data.reward and data.reward > 0 then
             -- Offset gold number slightly so it doesn't overlap with last damage
             local offsetY = -10
-            createNumber(data.position.x, data.position.y + offsetY, data.reward, false)
+            createNumber(data.position.x, data.position.y + offsetY, data.reward, FloatingNumbers.TYPE_GOLD)
+        end
+    end)
+
+    -- Listen for shard drop events
+    EventBus.on("void_shard_dropped", function(data)
+        if data.amount and data.amount > 0 then
+            local offsetY = -20  -- Offset to avoid overlap with gold
+            createNumber(data.position.x, data.position.y + offsetY, data.amount, FloatingNumbers.TYPE_SHARD)
+        end
+    end)
+
+    -- Listen for crystal drop events
+    EventBus.on("void_crystal_dropped", function(data)
+        if data.amount and data.amount > 0 then
+            local offsetY = -20
+            createNumber(data.position.x, data.position.y + offsetY, data.amount, FloatingNumbers.TYPE_CRYSTAL)
         end
     end)
 end
@@ -195,7 +217,7 @@ end
 
 function FloatingNumbers.draw()
     local cfg = Config.FLOATING_NUMBERS
-    local font = Fonts.get("medium")
+    local font = Fonts.get("floatingNumber")
     if not font then return end
 
     love.graphics.setFont(font)
@@ -215,7 +237,7 @@ function FloatingNumbers.draw()
 
         -- Format text
         local text = tostring(num.value)
-        if not num.isDamage then
+        if num.numberType ~= FloatingNumbers.TYPE_DAMAGE then
             text = "+" .. text
         end
 
@@ -223,12 +245,18 @@ function FloatingNumbers.draw()
         local textWidth = font:getWidth(text)
         local textHeight = font:getHeight()
 
-        -- Choose color
+        -- Choose color based on number type
         local color
-        if num.isDamage then
+        if num.numberType == FloatingNumbers.TYPE_DAMAGE then
             color = cfg.damageColor
-        else
+        elseif num.numberType == FloatingNumbers.TYPE_GOLD then
             color = cfg.goldColor
+        elseif num.numberType == FloatingNumbers.TYPE_SHARD then
+            color = cfg.shardColor
+        elseif num.numberType == FloatingNumbers.TYPE_CRYSTAL then
+            color = cfg.crystalColor
+        else
+            color = cfg.damageColor
         end
 
         -- Draw with transform

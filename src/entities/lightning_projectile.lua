@@ -120,15 +120,18 @@ function LightningProjectile:draw()
     love.graphics.rectangle("fill", tipX - ps/2, tipY - ps/2, ps, ps)
 end
 
-function LightningProjectile:getLightParams()
+-- Get glow parameters for the bloom system
+function LightningProjectile:getGlowParams()
     return {
         x = self.x,
         y = self.y,
         radius = 40,
         color = { 0.3, 0.6, 1.0 },
         intensity = 0.8,
-        flicker = false,
     }
 end
+
+-- Alias for backward compatibility
+LightningProjectile.getLightParams = LightningProjectile.getGlowParams
 
 return LightningProjectile

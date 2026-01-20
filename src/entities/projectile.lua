@@ -249,14 +249,14 @@ function Projectile:draw()
     end
 end
 
--- Get light parameters for the lighting system
-function Projectile:getLightParams()
-    local lightingCfg = Config.LIGHTING
+-- Get glow parameters for the bloom system
+function Projectile:getGlowParams()
+    local postCfg = Config.POST_PROCESSING
 
     -- Get color based on tower type
     local color
-    if self.towerType and lightingCfg.colors.projectile[self.towerType] then
-        color = lightingCfg.colors.projectile[self.towerType]
+    if self.towerType and postCfg.colors.projectile[self.towerType] then
+        color = postCfg.colors.projectile[self.towerType]
     else
         color = self.color or {0.8, 0.6, 0.4}
     end
@@ -264,11 +264,13 @@ function Projectile:getLightParams()
     return {
         x = self.x,
         y = self.y,
-        radius = lightingCfg.radii.projectile or 40,
+        radius = postCfg.radii.projectile or 30,
         color = color,
-        intensity = lightingCfg.intensities.projectile or 1.0,
-        flicker = false,
+        intensity = 1.0,
     }
 end
+
+-- Alias for backward compatibility
+Projectile.getLightParams = Projectile.getGlowParams
 
 return Projectile

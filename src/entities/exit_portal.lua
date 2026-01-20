@@ -1,93 +1,73 @@
 -- src/entities/exit_portal.lua
--- Red exit portal at the base zone
--- Uses same procedural pixel art rendering as Void, but with red colors
+-- Organic procedural black hole at the base zone (player base)
+-- Uses pixel-pool approach like Void entity with gravity particles
 
 local Object = require("lib.classic")
 local Config = require("src.config")
 local Procedural = require("src.rendering.procedural")
-local Settings = require("src.ui.settings")
 
 local ExitPortal = Object:extend()
 
 function ExitPortal:new(x, y)
-    -- Position (center of portal)
     self.x = x
     self.y = y
 
-    -- Size state
-    self.size = Config.EXIT_PORTAL.baseSize
-
-    -- Pixel art scale (size of each "pixel")
-    self.pixelSize = Config.EXIT_PORTAL.pixelSize
-
-    -- Animation state
+    local cfg = Config.VOID_CORE
+    self.size = cfg.baseSize
+    self.pixelSize = cfg.pixelSize
     self.time = 0
+    self.seed = math.random(1000) + 5000
 
-    -- Unique seed for procedural effects
-    self.seed = math.random(1000) + 5000  -- Different seed range from Void
-
-    -- Exit animation tracking
+    -- Exit/breach tracking (keep existing)
     self.activeExits = {}
     self.exitParticles = {}
-
-    -- Breach effect tracking
-    self.breachTendrils = {}     -- Void tendrils reaching out
-    self.surgePulse = 0          -- Portal surge intensity (0-1)
+    self.breachTendrils = {}
+    self.surgePulse = 0
     self.surgeTimer = 0
 
-    -- Generate pixel pool for creep-style rendering
+    -- Gravity pull particles
+    self.gravityParticles = {}
+    self:spawnGravityParticles()
+
+    -- Generate pixel pool (organic boundary)
     self:generatePixels()
 end
 
--- Generate pixel pool for creep-style rendering (same approach as Void)
 function ExitPortal:generatePixels()
     self.pixels = {}
     local ps = self.pixelSize
     local radius = self.size
-    local cfg = Config.EXIT_PORTAL
+    local cfg = Config.VOID_CORE
 
-    -- Create a grid of pixels within an expanded area (to allow membrane breathing)
     local expandedRadius = radius * 1.3
     local gridSize = math.ceil(expandedRadius * 2 / ps)
     local halfGrid = gridSize / 2
 
     for py = 0, gridSize - 1 do
         for px = 0, gridSize - 1 do
-            -- Position relative to center
             local relX = (px - halfGrid + 0.5) * ps
             local relY = (py - halfGrid + 0.5) * ps
-
-            -- Distance from center
             local dist = math.sqrt(relX * relX + relY * relY)
             local angle = math.atan2(relY, relX)
 
-            -- Base edge noise on ANGLE (creep style)
             local baseEdgeNoise = Procedural.fbm(
                 math.cos(angle) * cfg.distortionFrequency,
                 math.sin(angle) * cfg.distortionFrequency,
-                self.seed,
-                cfg.octaves
+                self.seed, cfg.octaves
             )
 
-            -- Pre-compute wobble phase offset (OPTIMIZATION)
             local wobblePhase = Procedural.fbm(
-                angle * cfg.wobbleFrequency,
-                0,
-                self.seed + 500,
-                2
+                angle * cfg.wobbleFrequency, 0,
+                self.seed + 500, 2
             ) * math.pi * 2
 
-            -- Only include pixels that could potentially be visible
             local maxEdgeRadius = radius * (0.7 + 0.5 + cfg.wobbleAmount * 0.5)
             if dist < maxEdgeRadius then
-                local distNorm = dist / radius
                 table.insert(self.pixels, {
-                    relX = relX,
-                    relY = relY,
-                    px = px,
-                    py = py,
+                    relX = relX, relY = relY,
+                    px = px, py = py,
                     dist = dist,
-                    distNorm = distNorm,
+                    distNorm = dist / radius,
                     angle = angle,
                     baseEdgeNoise = baseEdgeNoise,
                     wobblePhase = wobblePhase,
@@ -99,6 +79,27 @@ function ExitPortal:generatePixels()
     end
 end
 
+function ExitPortal:spawnGravityParticles()
+    local cfg = Config.VOID_CORE.particles
+    for i = 1, cfg.count do
+        self:spawnGravityParticle()
+    end
+end
+
+function ExitPortal:spawnGravityParticle()
+    local cfg = Config.VOID_CORE
+    local pcfg = cfg.particles
+    local angle = math.random() * math.pi * 2
+    local dist = self.size * (pcfg.spawnRadius * (0.8 + math.random() * 0.4))
+
+    table.insert(self.gravityParticles, {
+        angle = angle,
+        dist = dist,
+        speed = pcfg.pullSpeed * (0.7 + math.random() * 0.6),
+        brightness = 0.3 + math.random() * 0.5,
+    })
+end
+
 function ExitPortal:update(dt)
     self.time = self.time + dt
 
@@ -108,6 +109,19 @@ function ExitPortal:update(dt)
         self.surgePulse = self.surgeTimer / 0.4
     else
         self.surgePulse = 0
+    end
+
+    -- Update gravity particles (pull inward)
+    local cfg = Config.VOID_CORE
+    for i = #self.gravityParticles, 1, -1 do
+        local p = self.gravityParticles[i]
+        p.dist = p.dist - p.speed * dt
+
+        -- Respawn when reaching core
+        if p.dist < cfg.coreSize then
+            table.remove(self.gravityParticles, i)
+            self:spawnGravityParticle()
+        end
     end
 
     -- Clean up finished exit animations
@@ -200,125 +214,112 @@ function ExitPortal:triggerBreach(creepX, creepY)
 end
 
 function ExitPortal:draw()
-    local cfg = Config.EXIT_PORTAL
+    local cfg = Config.VOID_CORE
     local colors = cfg.colors
     local ps = self.pixelSize
     local t = self.time
     local radius = self.size
 
-    -- Apply surge pulse to radius
-    local surgeBoost = self.surgePulse * 0.3
+    -- Apply surge boost
+    local surgeBoost = self.surgePulse * 0.15
     local effectiveRadius = radius * (1 + surgeBoost)
 
-    -- Draw shadow below portal (larger during surge)
+    -- 1. Draw shadow
     local shadowCfg = cfg.shadow
-    love.graphics.setColor(0, 0, 0, shadowCfg.alpha * (1 + self.surgePulse * 0.5))
-    local shadowWidth = effectiveRadius * shadowCfg.width
-    local shadowHeight = effectiveRadius * shadowCfg.height
-    local shadowY = self.y + effectiveRadius * shadowCfg.offsetY
-    love.graphics.ellipse("fill", self.x, shadowY, shadowWidth, shadowHeight)
+    love.graphics.setColor(0, 0, 0, shadowCfg.alpha)
+    love.graphics.ellipse("fill", self.x, self.y + radius * shadowCfg.offsetY,
+        radius * shadowCfg.width, radius * shadowCfg.height)
 
-    -- Draw surge glow behind portal
+    -- Draw surge glow behind portal (purple)
     if self.surgePulse > 0 then
         love.graphics.setBlendMode("add")
         local glowAlpha = self.surgePulse * 0.6
-        love.graphics.setColor(1, 0.3, 0.1, glowAlpha * 0.3)
-        love.graphics.circle("fill", self.x, self.y, effectiveRadius * 2.5)
-        love.graphics.setColor(1, 0.5, 0.2, glowAlpha * 0.5)
-        love.graphics.circle("fill", self.x, self.y, effectiveRadius * 1.8)
+        love.graphics.setColor(0.5, 0.2, 0.7, glowAlpha * 0.3)
+        love.graphics.circle("fill", self.x, self.y, radius * 2.5)
+        love.graphics.setColor(0.9, 0.7, 0.3, glowAlpha * 0.5)
+        love.graphics.circle("fill", self.x, self.y, radius * 1.8)
         love.graphics.setBlendMode("alpha")
     end
 
-    -- Draw each pixel with animated void effects (matching Void:draw)
-    for _, p in ipairs(self.pixels) do
-        -- Calculate animated edge boundary using pre-computed wobblePhase (OPTIMIZED)
-        local wobbleNoise = math.sin(t * cfg.wobbleSpeed + p.wobblePhase) * 0.5 + 0.5
-        local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
+    -- 2. Draw gravity particles (behind main body)
+    self:drawGravityParticles()
 
-        -- Skip pixels outside the current animated boundary
+    -- 3. Draw organic boundary (pixel-pool approach like Void)
+    local wobbleTime = t * cfg.wobbleSpeed
+    local sparkleTimeX = math.floor(t * 8)
+    local sparkleTimeY = math.floor(t * 5)
+
+    for _, p in ipairs(self.pixels) do
+        local wobbleNoise = math.sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
+        local animatedEdgeRadius = effectiveRadius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
+
         if p.dist >= animatedEdgeRadius then
             goto continue
         end
 
-        -- Determine if this pixel is near the edge (for glow effect)
         local isEdge = p.dist > animatedEdgeRadius - ps * 1.5
-
-        -- Calculate screen position
         local screenX = self.x + p.relX - ps / 2
         local screenY = self.y + p.relY - ps / 2
 
-        -- Animated noise layers
-        local n1 = Procedural.fbm(p.px * 0.3 + t * 0.8, p.py * 0.3 + t * 0.2, self.seed, 3)
-        local n2 = Procedural.fbm(p.px * 0.2 - t * 0.4, p.py * 0.4 + t * 0.6, self.seed + 50, 2)
-        local n3 = Procedural.hash(p.px + math.floor(t * 4), p.py, self.seed + 111)
+        -- Check if in squared core region
+        local inCore = math.abs(p.relX) < cfg.coreSize and math.abs(p.relY) < cfg.coreSize
 
-        -- Swirling pattern
-        local swirl = math.sin(p.angle * 3 + t * cfg.swirlSpeed + p.distNorm * 4) * 0.5 + 0.5
-
-        -- Random sparkles
-        local sparkle = Procedural.hash(p.px + math.floor(t * 8), p.py + math.floor(t * 5), self.seed + 333)
-        local sparkleThreshold = cfg.sparkleThreshold or 0.92
-        local isSpark = sparkle > sparkleThreshold
-
-        -- Color calculation (RED palette)
         local r, g, b
 
-        if isSpark then
-            -- Bright sparkle (warm white)
+        -- Sparkles
+        local sparkle = Procedural.hash(p.px + sparkleTimeX, p.py + sparkleTimeY, self.seed + 333)
+        if sparkle > cfg.sparkleThreshold then
             r, g, b = colors.sparkle[1], colors.sparkle[2], colors.sparkle[3]
+        elseif inCore then
+            -- Deep void core (very dark)
+            local n = Procedural.hash(p.px + math.floor(t * 2), p.py, self.seed) * 0.01
+            r = colors.core[1] + n
+            g = colors.core[2] + n * 0.5
+            b = colors.core[3] + n
         elseif isEdge then
-            -- Edge glow - bright orange-red
+            -- Edge glow
             local pulse = math.sin(t * cfg.pulseSpeed + p.angle * 2) * 0.3 + 0.7
             r = colors.edgeGlow[1] * pulse
             g = colors.edgeGlow[2] * pulse
             b = colors.edgeGlow[3] * pulse
         else
-            -- Interior void texture (red instead of purple)
-            local v = n1 * 0.5 + n2 * 0.3 + swirl * 0.2
-
-            -- Interpolate between core and mid based on noise and distance
-            local blend = v + p.distNorm * 0.3
-            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * blend + p.rnd * 0.08
-            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * blend + p.rnd2 * 0.02
-            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * blend + p.rnd * 0.02
-
-            -- Random darker spots
-            if p.rnd > 0.85 then
-                r, g, b = r * 0.6, g * 0.4, b * 0.4
-            end
-
-            -- Random brighter red/orange tints
-            if p.rnd2 > 0.8 then
-                r = r + 0.12
-                g = g + 0.04
-            end
-
-            -- Vertical tear streaks
-            local tear = Procedural.fbm(p.px * 0.1, p.py * 0.5 + t * 0.5, self.seed + 200, 2)
-            if tear > 0.58 and p.rnd > 0.4 then
-                local bright = (tear - 0.58) * 2 + n3 * 0.2
-                r = r + bright * 0.4
-                g = g + bright * 0.15
-            end
-        end
-
-        -- Pulsing glow
-        local pulse = math.sin(t * cfg.pulseSpeed + p.distNorm * 3 + p.rnd * 4) * 0.06
-        r = math.max(0, math.min(1, r + pulse))
-        g = math.max(0, math.min(1, g + pulse * 0.3))
-
-        -- Self-illumination: boost brightness when lighting is enabled
-        if Settings.isLightingEnabled() then
-            local boost = Config.LIGHTING.selfIllumination and Config.LIGHTING.selfIllumination.void or 1.4
-            r = math.min(1, r * boost)
-            g = math.min(1, g * boost)
-            b = math.min(1, b * boost)
+            -- Interior (dark purple)
+            local swirl = math.sin(p.angle * 3 + t * cfg.swirlSpeed + p.distNorm * 4) * 0.5 + 0.5
+            local v = p.rnd * 0.3 + swirl * 0.2 + p.distNorm * 0.3
+            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * v
+            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * v
+            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * v
         end
 
         love.graphics.setColor(r, g, b)
         love.graphics.rectangle("fill", screenX, screenY, ps, ps)
 
         ::continue::
+    end
+end
+
+function ExitPortal:drawGravityParticles()
+    local cfg = Config.VOID_CORE
+    local pcfg = cfg.particles
+    local ps = pcfg.size
+
+    for _, p in ipairs(self.gravityParticles) do
+        local x = self.x + math.cos(p.angle) * p.dist
+        local y = self.y + math.sin(p.angle) * p.dist
+        local distNorm = p.dist / (self.size * pcfg.spawnRadius)
+        -- Stronger alpha for more visible trails, brighter when far, still visible when close
+        local alpha = p.brightness * (0.3 + distNorm * 0.7)
+
+        -- Brighter color with slight additive feel
+        love.graphics.setColor(pcfg.color[1], pcfg.color[2], pcfg.color[3], alpha)
+        love.graphics.rectangle("fill", x - ps/2, y - ps/2, ps, ps)
+
+        -- Add a subtle glow/trail behind each particle
+        if distNorm > 0.3 then
+            local glowAlpha = alpha * 0.3
+            love.graphics.setColor(pcfg.color[1], pcfg.color[2], pcfg.color[3], glowAlpha)
+            love.graphics.rectangle("fill", x - ps, y - ps, ps * 2, ps * 2)
+        end
     end
 end
 
@@ -406,7 +407,7 @@ function ExitPortal:drawSingleTear(cx, cy, progress)
     end
 end
 
--- Draw spark particles from tear edges (orange-red)
+-- Draw spark particles from breach (gold/purple)
 function ExitPortal:drawExitParticles()
     local cfg = Config.EXIT_ANIMATION.particles
 
@@ -415,27 +416,27 @@ function ExitPortal:drawExitParticles()
         local ps = p.size or cfg.size
 
         if p.type == "burst" then
-            -- Burst particles: bright glowing embers
+            -- Burst particles: gold/purple embers
             love.graphics.setBlendMode("add")
-            -- Outer glow
-            love.graphics.setColor(1, 0.3, 0.1, alpha * 0.4)
+            -- Purple outer glow
+            love.graphics.setColor(0.6, 0.25, 0.8, alpha * 0.4)
             love.graphics.circle("fill", p.x, p.y, ps * 2)
-            -- Core
-            love.graphics.setColor(1, 0.6, 0.3, alpha * 0.8)
+            -- Gold core
+            love.graphics.setColor(1.0, 0.85, 0.4, alpha * 0.8)
             love.graphics.rectangle("fill", p.x - ps / 2, p.y - ps / 2, ps, ps)
-            -- Bright center
-            love.graphics.setColor(1, 0.9, 0.6, alpha)
+            -- Bright gold center
+            love.graphics.setColor(1.0, 0.95, 0.7, alpha)
             love.graphics.rectangle("fill", p.x - ps / 4, p.y - ps / 4, ps / 2, ps / 2)
             love.graphics.setBlendMode("alpha")
         else
-            -- Regular tear particles
-            love.graphics.setColor(cfg.color[1], cfg.color[2], cfg.color[3], alpha)
+            -- Regular tear particles (gold)
+            love.graphics.setColor(1.0, 0.85, 0.4, alpha)
             love.graphics.rectangle("fill", p.x - ps / 2, p.y - ps / 2, ps, ps)
         end
     end
 end
 
--- Draw breach effects (tendrils reaching out from portal)
+-- Draw breach effects (tendrils reaching out from portal - purple with gold core)
 function ExitPortal:drawBreachEffects()
     -- Draw tendrils
     for _, t in ipairs(self.breachTendrils) do
@@ -469,18 +470,18 @@ function ExitPortal:drawBreachEffects()
                     segY = segY + perpY * jag
                 end
 
-                -- Glow
-                love.graphics.setColor(1, 0.3, 0.1, alpha * 0.4)
+                -- Purple glow (outer)
+                love.graphics.setColor(0.5, 0.2, 0.7, alpha * 0.4)
                 love.graphics.setLineWidth(t.width * 2)
                 love.graphics.line(prevX, prevY, segX, segY)
 
-                -- Core
-                love.graphics.setColor(1, 0.6, 0.3, alpha * 0.8)
+                -- Gold core
+                love.graphics.setColor(1.0, 0.8, 0.3, alpha * 0.8)
                 love.graphics.setLineWidth(t.width)
                 love.graphics.line(prevX, prevY, segX, segY)
 
-                -- Bright center
-                love.graphics.setColor(1, 0.9, 0.7, alpha)
+                -- Bright gold center
+                love.graphics.setColor(1.0, 0.95, 0.6, alpha)
                 love.graphics.setLineWidth(1)
                 love.graphics.line(prevX, prevY, segX, segY)
 
@@ -493,12 +494,10 @@ function ExitPortal:drawBreachEffects()
     love.graphics.setLineWidth(1)
 end
 
--- Get light parameters for the lighting system (red glow)
+-- Get light parameters for the lighting system (purple glow)
 function ExitPortal:getLightParams()
-    local lightingCfg = Config.LIGHTING
-
-    -- Red light color
-    local color = {1.0, 0.35, 0.2}
+    -- Purple light color (matches void core theme)
+    local color = {0.6, 0.3, 0.8}
 
     -- Calculate pulsing intensity
     local minIntensity = 1.5

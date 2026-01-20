@@ -140,8 +140,8 @@ function PoisonCloud:draw()
     end
 end
 
--- Get light parameters for the lighting system
-function PoisonCloud:getLightParams()
+-- Get glow parameters for the bloom system
+function PoisonCloud:getGlowParams()
     local progress = self.remaining / self.duration
     local color = Config.STATUS_EFFECTS.poison.color
 
@@ -151,8 +151,10 @@ function PoisonCloud:getLightParams()
         radius = self.radius * 1.2,
         color = color,
         intensity = 0.5 * progress,
-        flicker = true,
     }
 end
+
+-- Alias for backward compatibility
+PoisonCloud.getLightParams = PoisonCloud.getGlowParams
 
 return PoisonCloud

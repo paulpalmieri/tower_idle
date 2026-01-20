@@ -5,7 +5,7 @@ local ConfigValidator = {}
 
 -- Required fields for different config sections
 local TOWER_REQUIRED = {"name", "cost", "damage", "fireRate", "range", "projectileSpeed", "color"}
-local CREEP_REQUIRED = {"name", "hp", "speed", "reward", "income", "sendCost", "size"}
+local CREEP_REQUIRED = {"name", "hp", "speed", "reward", "sendCost", "size"}
 local STATUS_EFFECT_REQUIRED = {"duration", "color"}
 
 -- Validation errors are collected and returned
@@ -94,7 +94,6 @@ local function validateCreeps(Config)
         if creep.hp then validatePositiveNonZero(creep.hp, "hp", section) end
         if creep.speed then validatePositive(creep.speed, "speed", section) end
         if creep.reward then validatePositive(creep.reward, "reward", section) end
-        if creep.income then validatePositive(creep.income, "income", section) end
         if creep.sendCost then validatePositive(creep.sendCost, "sendCost", section) end
         if creep.size then validatePositiveNonZero(creep.size, "size", section) end
     end
@@ -140,12 +139,6 @@ local function validateEconomy(Config)
     end
     if Config.STARTING_LIVES then
         validatePositiveNonZero(Config.STARTING_LIVES, "STARTING_LIVES", section)
-    end
-    if Config.BASE_INCOME then
-        validatePositive(Config.BASE_INCOME, "BASE_INCOME", section)
-    end
-    if Config.INCOME_TICK_SECONDS then
-        validatePositiveNonZero(Config.INCOME_TICK_SECONDS, "INCOME_TICK_SECONDS", section)
     end
 end
 

@@ -34,10 +34,11 @@ local SHORTCUTS = {
     { category = "GAME" },
     { key = "S", description = "Cycle game speed" },
     { key = "P", description = "Settings menu" },
-    { key = "ESC", description = "Cancel / Deselect / Quit" },
+    { key = "ESC", description = "Cancel / Deselect / Pause" },
 
     { category = "DEBUG / VISUAL" },
-    { key = "L", description = "Toggle lighting" },
+    { key = "D", description = "Toggle debug overlay" },
+    { key = "L", description = "Toggle bloom" },
     { key = "G", description = "Cycle floating numbers style" },
     { key = "~", description = "Toggle this overlay" },
 }

@@ -57,6 +57,12 @@ function love.keypressed(key)
     end
 end
 
+function love.wheelmoved(x, y)
+    if ActiveModule.wheelmoved then
+        ActiveModule.wheelmoved(x, y)
+    end
+end
+
 function love.quit()
     if ActiveModule.quit then
         ActiveModule.quit()

@@ -20,11 +20,12 @@ local state = {
     resolutionIndex = 1,
     soundEnabled = true,
     volume = 50,
-    -- Visual effects toggles
-    lightingEnabled = false,
+    -- Visual effects toggles (all enabled by default)
+    bloomEnabled = true,
     vignetteEnabled = true,
     fogParticlesEnabled = true,
     dustParticlesEnabled = true,
+    ditherEnabled = true,
     controls = {},
     dropdownOpen = false,
     draggingVolume = false,
@@ -162,6 +163,16 @@ local function _calculateLayout()
         height = cfg.checkboxSize,
         type = "checkbox",
     }
+    y = y + cfg.checkboxSize + rowSpacing
+
+    -- Dither checkbox
+    state.controls.dither = {
+        x = controlX,
+        y = y,
+        width = cfg.checkboxSize,
+        height = cfg.checkboxSize,
+        type = "checkbox",
+    }
 end
 
 local function _updateScale()
@@ -232,10 +243,11 @@ function Settings.init()
 
     -- Set visual effects from Config
     local vfx = Config.SETTINGS.visualEffects
-    state.lightingEnabled = vfx.lighting
+    state.bloomEnabled = vfx.bloom
     state.vignetteEnabled = vfx.vignette
     state.fogParticlesEnabled = vfx.fogParticles
     state.dustParticlesEnabled = vfx.dustParticles
+    state.ditherEnabled = Config.TOWER_DITHER.enabled
 
     -- Find current resolution index
     local currentW, currentH = love.graphics.getDimensions()
@@ -368,10 +380,13 @@ function Settings.handleClick(x, y)
         return true
     end
 
-    -- Lighting checkbox
+    -- Bloom checkbox
     local lightingCtrl = state.controls.lighting
     if _pointInRect(x, y, lightingCtrl.x, lightingCtrl.y, lightingCtrl.width, lightingCtrl.height) then
-        state.lightingEnabled = not state.lightingEnabled
+        state.bloomEnabled = not state.bloomEnabled
+        -- Sync with Bloom module
+        local Bloom = require("src.rendering.bloom")
+        Bloom.setEnabled(state.bloomEnabled)
         return true
     end
 
@@ -393,6 +408,14 @@ function Settings.handleClick(x, y)
     local dustCtrl = state.controls.dustParticles
     if _pointInRect(x, y, dustCtrl.x, dustCtrl.y, dustCtrl.width, dustCtrl.height) then
         state.dustParticlesEnabled = not state.dustParticlesEnabled
+        return true
+    end
+
+    -- Dither checkbox
+    local ditherCtrl = state.controls.dither
+    if _pointInRect(x, y, ditherCtrl.x, ditherCtrl.y, ditherCtrl.width, ditherCtrl.height) then
+        state.ditherEnabled = not state.ditherEnabled
+        Config.TOWER_DITHER.enabled = state.ditherEnabled
         return true
     end
 
@@ -484,11 +507,11 @@ function Settings.draw()
     love.graphics.setColor(Config.COLORS.frameMid)
     love.graphics.rectangle("fill", contentX, state.separatorY2, state.width - padding * 2, 2)
 
-    -- Lighting row
+    -- Bloom row
     local lightingCtrl = state.controls.lighting
     love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.print("Lighting", contentX, lightingCtrl.y + 2)
-    _drawCheckbox(lightingCtrl, state.lightingEnabled, state.hoverControl == "lighting")
+    love.graphics.print("Bloom", contentX, lightingCtrl.y + 2)
+    _drawCheckbox(lightingCtrl, state.bloomEnabled, state.hoverControl == "lighting")
 
     -- Vignette row
     local vignetteCtrl = state.controls.vignette
@@ -507,6 +530,12 @@ function Settings.draw()
     love.graphics.setColor(Config.COLORS.textPrimary)
     love.graphics.print("Dust", contentX, dustCtrl.y + 2)
     _drawCheckbox(dustCtrl, state.dustParticlesEnabled, state.hoverControl == "dustParticles")
+
+    -- Dither row
+    local ditherCtrl = state.controls.dither
+    love.graphics.setColor(Config.COLORS.textPrimary)
+    love.graphics.print("Dither", contentX, ditherCtrl.y + 2)
+    _drawCheckbox(ditherCtrl, state.ditherEnabled, state.hoverControl == "dither")
 end
 
 function Settings.show()
@@ -571,8 +600,8 @@ end
 -- VISUAL EFFECTS API
 -- =============================================================================
 
-function Settings.isLightingEnabled()
-    return state.lightingEnabled
+function Settings.isBloomEnabled()
+    return state.bloomEnabled
 end
 
 function Settings.isVignetteEnabled()
@@ -587,10 +616,22 @@ function Settings.isDustParticlesEnabled()
     return state.dustParticlesEnabled
 end
 
--- Toggle lighting (for keyboard shortcut)
-function Settings.toggleLighting()
-    state.lightingEnabled = not state.lightingEnabled
-    return state.lightingEnabled
+function Settings.isDitherEnabled()
+    return state.ditherEnabled
+end
+
+-- Set bloom state (for keyboard shortcut)
+function Settings.setBloomEnabled(enabled)
+    state.bloomEnabled = enabled
+end
+
+-- Toggle bloom (for keyboard shortcut)
+function Settings.toggleBloom()
+    state.bloomEnabled = not state.bloomEnabled
+    -- Sync with Bloom module
+    local Bloom = require("src.rendering.bloom")
+    Bloom.setEnabled(state.bloomEnabled)
+    return state.bloomEnabled
 end
 
 -- =============================================================================

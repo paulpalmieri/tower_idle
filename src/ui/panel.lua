@@ -18,6 +18,7 @@ local state = {
     selectedTower = nil,
     towerButtons = {},
     upgradeButtons = {},
+    spawnAllButton = nil,  -- Spawn all test towers button
     hoverButton = nil,
     upgradeLevels = {
         autoClicker = 0,
@@ -28,6 +29,8 @@ local state = {
     layout = {
         statsY = 0,
         statsHeight = 0,
+        progressY = 0,
+        progressHeight = 0,
         towersY = 0,
         towersHeight = 0,
         upgradesY = 0,
@@ -36,10 +39,9 @@ local state = {
     -- Cached values from events
     cache = {
         gold = 0,
-        income = 0,
-        incomeProgress = 0,
         lives = 0,
         waveNumber = 0,
+        voidShards = 0,
     },
 }
 
@@ -61,6 +63,9 @@ local function _calculateLayout(height)
     -- Stats section (combined stats + void bar)
     local statsHeight = Config.UI.LAYOUT.statsHeight
 
+    -- Progress section (wave progress bar)
+    local progressHeight = Config.UI.LAYOUT.progressHeight
+
     -- Tower cards
     local towerCount = #TOWER_ORDER
     local towersHeight = towerCount * buttonHeight + (towerCount - 1) * buttonSpacing
@@ -77,6 +82,10 @@ local function _calculateLayout(height)
     state.layout.statsY = y
     state.layout.statsHeight = statsHeight
     y = y + statsHeight + sectionSpacing
+
+    state.layout.progressY = y
+    state.layout.progressHeight = progressHeight
+    y = y + progressHeight + sectionSpacing
 
     state.layout.towersY = y
     state.layout.towersHeight = towersHeight
@@ -137,29 +146,30 @@ function Panel.init(playAreaWidth, panelWidth, height)
         }
     end
 
+    -- Spawn all button (anchored at bottom)
+    local spawnButtonHeight = 36
+    state.spawnAllButton = {
+        type = "spawnAll",
+        x = state.x + padding,
+        y = height - padding - spawnButtonHeight,
+        width = buttonWidth,
+        height = spawnButtonHeight,
+    }
+
     -- Reset upgrade levels
     state.upgradeLevels = { autoClicker = 0 }
 
     -- Initialize cache with starting values
     state.cache = {
         gold = Config.STARTING_GOLD,
-        income = Config.BASE_INCOME,
-        incomeProgress = 0,
         lives = Config.STARTING_LIVES,
         waveNumber = 0,
+        voidShards = 0,
     }
 
     -- Subscribe to events for cache updates
     EventBus.on("gold_changed", function(data)
         state.cache.gold = data.total
-    end)
-
-    EventBus.on("income_tick", function(data)
-        state.cache.gold = data.total
-    end)
-
-    EventBus.on("creep_sent", function(data)
-        state.cache.income = data.income
     end)
 
     EventBus.on("life_lost", function(data)
@@ -168,6 +178,10 @@ function Panel.init(playAreaWidth, panelWidth, height)
 
     EventBus.on("wave_started", function(data)
         state.cache.waveNumber = data.waveNumber
+    end)
+
+    EventBus.on("void_shards_changed", function(data)
+        state.cache.voidShards = data.total
     end)
 end
 
@@ -199,10 +213,26 @@ function Panel.update(mouseX, mouseY)
     if hdr and mouseX >= hdr.x and mouseX <= hdr.x + hdr.width and
        mouseY >= hdr.y and mouseY <= hdr.y + hdr.height then
         state.hoverButton = { type = "upgradesHeader" }
+        return
+    end
+
+    -- Check spawn all button
+    local btn = state.spawnAllButton
+    if btn and mouseX >= btn.x and mouseX <= btn.x + btn.width and
+       mouseY >= btn.y and mouseY <= btn.y + btn.height then
+        state.hoverButton = btn
     end
 end
 
 function Panel.handleClick(x, y, economy)
+    -- Check spawn all button
+    local spawnBtn = state.spawnAllButton
+    if spawnBtn and x >= spawnBtn.x and x <= spawnBtn.x + spawnBtn.width and
+       y >= spawnBtn.y and y <= spawnBtn.y + spawnBtn.height then
+        EventBus.emit("spawn_test_towers", {})
+        return nil
+    end
+
     -- Check upgrades header (expand/collapse)
     local hdr = state.upgradesHeaderBounds
     if hdr and x >= hdr.x and x <= hdr.x + hdr.width and
@@ -337,7 +367,7 @@ local function _drawPanelBorder()
     end
 end
 
--- Draw unified stats section (gold, lives, wave, speed, void bar)
+-- Draw unified stats section (gold, lives, wave, speed) - simplified, no void bar
 local function _drawStatsSection(economy, voidEntity, waves, speedLabel)
     local padding = Config.UI.padding
     local sectionX = state.x + padding
@@ -351,18 +381,14 @@ local function _drawStatsSection(economy, voidEntity, waves, speedLabel)
     local contentX = sectionX + 10
     local y = sectionY + 10
 
-    -- Row 1: Gold (large) | +income/tick
+    -- Row 1: Gold (large)
     Fonts.setFont("medium")
     love.graphics.setColor(Config.COLORS.gold)
     love.graphics.print(tostring(economy.getGold()) .. "g", contentX, y)
 
-    Fonts.setFont("small")
-    love.graphics.setColor(Config.COLORS.income)
-    love.graphics.printf("+" .. economy.getIncome() .. "/tick", sectionX, y + 4, sectionWidth - 12, "right")
-
     y = y + 22
 
-    -- Row 2: Lives | Wave | Speed
+    -- Row 2: Lives | Wave | Speed (compact)
     -- Lives with heart indicator
     love.graphics.setColor(Config.COLORS.lives)
     Fonts.setFont("small")
@@ -389,26 +415,143 @@ local function _drawStatsSection(economy, voidEntity, waves, speedLabel)
         love.graphics.setColor(Config.COLORS.textSecondary)
     end
     love.graphics.printf(speedText, sectionX, y + 2, sectionWidth - 12, "right")
+end
 
-    y = y + 24
+-- Draw wave progress section (progress bar with boss markers + anger meter)
+local function _drawProgressSection(waves, voidEntity)
+    local padding = Config.UI.padding
+    local x = state.x + padding
+    local y = state.layout.progressY
+    local w = state.width - padding * 2
+    local h = state.layout.progressHeight
 
-    -- Row 3: VOID bar with anger level
+    PixelFrames.draw8BitFrame(x, y, w, h, "hud")
+
+    local contentX = x + 10
+    local cy = y + 8
+
+    -- Row 1: "WAVE 5/20" left, "10 SHARDS" right
+    Fonts.setFont("small")
+    love.graphics.setColor(Config.COLORS.textSecondary)
+    love.graphics.print("WAVE", contentX, cy)
+
+    Fonts.setFont("medium")
+    local currentWave = waves.getWaveNumber()
+    local totalWaves = waves.getTotalWaves()
+    love.graphics.setColor(Config.COLORS.textPrimary)
+    love.graphics.print(currentWave .. "/" .. totalWaves, contentX + 45, cy - 2)
+
+    -- Void shards (right-aligned)
+    Fonts.setFont("small")
+    love.graphics.setColor(Config.COLORS.voidShard)
+    love.graphics.printf(state.cache.voidShards .. " SHARDS", x, cy, w - 12, "right")
+
+    cy = cy + 22
+
+    -- Row 2: Wave Progress bar
+    local barX = contentX
+    local barWidth = w - 20
+    local barHeight = 12
+    local progress = currentWave / totalWaves
+
+    -- Background
+    love.graphics.setColor(Config.COLORS.progressBarBg)
+    love.graphics.rectangle("fill", barX, cy, barWidth, barHeight)
+
+    -- Fill
+    love.graphics.setColor(Config.COLORS.progressBar)
+    love.graphics.rectangle("fill", barX, cy, barWidth * progress, barHeight)
+
+    -- Boss markers (triangles above bar)
+    local bossWaves = waves.getBossWaves()
+    for _, bossWave in ipairs(bossWaves) do
+        local markerX = barX + (bossWave / totalWaves) * barWidth
+        love.graphics.setColor(Config.COLORS.bossMarker)
+        -- Triangle marker pointing down
+        love.graphics.polygon("fill",
+            markerX, cy - 2,
+            markerX - 4, cy - 8,
+            markerX + 4, cy - 8
+        )
+        -- Vertical line through bar
+        love.graphics.setColor(Config.COLORS.bossMarker[1], Config.COLORS.bossMarker[2], Config.COLORS.bossMarker[3], 0.5)
+        love.graphics.rectangle("fill", markerX - 1, cy, 2, barHeight)
+    end
+
+    -- Border
+    love.graphics.setColor(Config.COLORS.frameMid)
+    love.graphics.rectangle("line", barX, cy, barWidth, barHeight)
+
+    cy = cy + barHeight + 10
+
+    -- Row 3: Anger meter
     if voidEntity then
+        local angerCfg = Config.UI.angerMeter
+        local angerColors = angerCfg.colors
+        local tier = voidEntity:getTier()
+        local clickCount = voidEntity:getClickCount()
+        local maxClicks = voidEntity:getMaxClicks()
+        local clickPercent = clickCount / maxClicks
+
+        -- Label + Tier indicator
         Fonts.setFont("small")
         love.graphics.setColor(Config.COLORS.amethyst)
-        love.graphics.print("VOID", contentX, y + 1)
+        love.graphics.print("ANGER", contentX, cy + 1)
 
-        -- Health bar (8 segments)
-        local barX = contentX + 40
-        local barWidth = sectionWidth - 95
-        local barHeight = 12
-        local healthPercent = voidEntity:getHealthPercent()
+        -- Tier indicator (right-aligned on same row)
+        local tierText = "Tier " .. tier
+        if tier >= 4 then
+            love.graphics.setColor(angerColors.fillTier4)
+            tierText = "MAX"
+        elseif tier >= 3 then
+            love.graphics.setColor(angerColors.fillTier3)
+        elseif tier >= 2 then
+            love.graphics.setColor(angerColors.fillTier2)
+        else
+            love.graphics.setColor(angerColors.fill)
+        end
+        love.graphics.printf(tierText, x, cy + 1, w - 12, "right")
 
-        PixelFrames.drawSegmentedBar(barX, y, barWidth, barHeight, healthPercent, 8, Config.COLORS.amethyst, {0.12, 0.06, 0.14})
+        cy = cy + 16
 
-        -- Anger level indicator
-        love.graphics.setColor(Config.COLORS.gold)
-        love.graphics.printf("Lv" .. voidEntity.currentAnger, sectionX, y + 1, sectionWidth - 12, "right")
+        -- Anger meter bar
+        local angerBarHeight = angerCfg.height
+        local thresholds = Config.VOID.angerThresholds
+
+        -- Background
+        love.graphics.setColor(angerColors.background)
+        love.graphics.rectangle("fill", barX, cy, barWidth, angerBarHeight)
+
+        -- Fill color based on tier
+        local fillColor
+        if tier >= 4 then
+            fillColor = angerColors.fillTier4
+        elseif tier >= 3 then
+            fillColor = angerColors.fillTier3
+        elseif tier >= 2 then
+            fillColor = angerColors.fillTier2
+        else
+            fillColor = angerColors.fill
+        end
+        love.graphics.setColor(fillColor)
+        love.graphics.rectangle("fill", barX, cy, barWidth * clickPercent, angerBarHeight)
+
+        -- Threshold markers
+        love.graphics.setColor(angerColors.thresholdMarker)
+        for _, threshold in ipairs(thresholds) do
+            local markerX = barX + (threshold / maxClicks) * barWidth
+            love.graphics.rectangle("fill", markerX - angerCfg.thresholdMarkerWidth / 2, cy, angerCfg.thresholdMarkerWidth, angerBarHeight)
+        end
+
+        -- Border
+        love.graphics.setColor(angerColors.border)
+        love.graphics.rectangle("line", barX, cy, barWidth, angerBarHeight)
+
+        -- Click count centered on bar
+        Fonts.setFont("small")
+        love.graphics.setColor(Config.COLORS.textPrimary)
+        local countText = clickCount .. "/" .. maxClicks
+        love.graphics.printf(countText, barX, cy + 1, barWidth, "center")
     end
 end
 
@@ -481,6 +624,33 @@ local function _drawTowerCard(btn, economy)
         statsText = "DMG:" .. towerConfig.damage .. "  RNG:" .. towerConfig.range
     end
     love.graphics.print(statsText, textX, btn.y + 30)
+end
+
+-- Draw spawn all button (anchored at bottom)
+local function _drawSpawnAllButton()
+    local btn = state.spawnAllButton
+    if not btn then return end
+
+    local isHovered = state.hoverButton == btn
+
+    -- Card frame
+    local styleName = isHovered and "highlight" or "standard"
+    PixelFrames.draw8BitCard(btn.x, btn.y, btn.width, btn.height, styleName)
+
+    -- Button text
+    Fonts.setFont("medium")
+    if isHovered then
+        love.graphics.setColor(Config.COLORS.gold)
+    else
+        love.graphics.setColor(Config.COLORS.textPrimary)
+    end
+
+    -- Center text
+    local text = "SPAWN ALL"
+    local textWidth = Fonts.get("medium"):getWidth(text)
+    local textX = btn.x + (btn.width - textWidth) / 2
+    local textY = btn.y + (btn.height - Fonts.get("medium"):getHeight()) / 2
+    love.graphics.print(text, textX, textY)
 end
 
 -- Draw collapsible upgrades section
@@ -569,6 +739,11 @@ function Panel.draw(economy, voidEntity, waves, speedLabel)
         _drawStatsSection(economy, voidEntity, waves, speedLabel)
     end
 
+    -- Wave progress section (with anger meter)
+    if waves then
+        _drawProgressSection(waves, voidEntity)
+    end
+
     -- Tower cards (compact 2-row)
     for _, btn in ipairs(state.towerButtons) do
         _drawTowerCard(btn, economy)
@@ -576,6 +751,9 @@ function Panel.draw(economy, voidEntity, waves, speedLabel)
 
     -- Collapsible upgrades section
     _drawUpgradesSection(economy)
+
+    -- Spawn all button (bottom)
+    _drawSpawnAllButton()
 end
 
 function Panel.getSelectedTower()

@@ -148,7 +148,8 @@ function Blackhole:draw()
     end
 end
 
-function Blackhole:getLightParams()
+-- Get glow parameters for the bloom system
+function Blackhole:getGlowParams()
     local progress = self.remaining / self.duration
     return {
         x = self.x,
@@ -156,8 +157,10 @@ function Blackhole:getLightParams()
         radius = self.radius * 0.5,
         color = { 0.75, 0.45, 0.95 },
         intensity = 0.5 * progress,
-        flicker = false,
     }
 end
+
+-- Alias for backward compatibility
+Blackhole.getLightParams = Blackhole.getGlowParams
 
 return Blackhole

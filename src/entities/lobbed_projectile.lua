@@ -175,7 +175,8 @@ function LobbedProjectile:draw()
     love.graphics.pop()
 end
 
-function LobbedProjectile:getLightParams()
+-- Get glow parameters for the bloom system
+function LobbedProjectile:getGlowParams()
     local colors = Config.GROUND_EFFECTS.burning_ground.colors
     return {
         x = self.x,
@@ -183,8 +184,10 @@ function LobbedProjectile:getLightParams()
         radius = 40,
         color = { colors.edge[1], colors.edge[2], colors.edge[3] },
         intensity = 0.8,
-        flicker = false,
     }
 end
+
+-- Alias for backward compatibility
+LobbedProjectile.getLightParams = LobbedProjectile.getGlowParams
 
 return LobbedProjectile

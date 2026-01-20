@@ -19,7 +19,8 @@ local Profiler = require("src.systems.profiler")
 local Fonts = require("src.rendering.fonts")
 local Background = require("src.rendering.background")
 local Atmosphere = require("src.rendering.atmosphere")
-local Lighting = require("src.rendering.lighting")
+local PostProcessing = require("src.rendering.post_processing")
+local Bloom = require("src.rendering.bloom")
 local FloatingNumbers = require("src.rendering.floating_numbers")
 
 -- Entities
@@ -39,6 +40,12 @@ local Tooltip = require("src.ui.tooltip")
 local Cursor = require("src.ui.cursor")
 local Settings = require("src.ui.settings")
 local Shortcuts = require("src.ui.shortcuts")
+local SkillTree = require("src.ui.skill_tree")
+local VictoryScreen = require("src.ui.victory_screen")
+local PauseMenu = require("src.ui.pause_menu")
+
+-- Systems (skill tree)
+local SkillTreeData = require("src.systems.skill_tree_data")
 
 local Game = {}
 
@@ -67,6 +74,8 @@ local state = {
     -- Tower Y-sorting cache (optimization: towers don't move)
     towersSortedByY = {},  -- Cached sorted tower list
     towersSortDirty = true,  -- Flag to rebuild cache when towers change
+    -- Debug display
+    showDebug = false,  -- Toggle with D key
 }
 
 function Game.load()
@@ -112,8 +121,8 @@ function Game.load()
     -- Initialize atmosphere effects
     Atmosphere.init()
 
-    -- Initialize lighting system
-    Lighting.init()
+    -- Initialize post-processing and bloom
+    PostProcessing.init()
 
     -- Initialize audio system
     Audio.init()
@@ -124,6 +133,16 @@ function Game.load()
     -- Initialize shortcuts overlay
     Shortcuts.init()
 
+    -- Initialize pause menu
+    PauseMenu.init()
+
+    -- Initialize skill tree
+    SkillTreeData.init()
+    SkillTree.init()
+
+    -- Initialize victory screen
+    VictoryScreen.init()
+
     -- Initialize floating numbers system
     FloatingNumbers.init()
 
@@ -132,9 +151,6 @@ function Game.load()
 
     -- Set up event listeners
     Game.setupEvents()
-
-    -- Spawn test towers (levels 1-5 for each turret type, one row per type)
-    Game.spawnTestTowers()
 
     -- Start game
     StateMachine.transition("playing")
@@ -181,14 +197,43 @@ function Game.setupEvents()
     EventBus.on("tower_placed", function(data)
         -- Recompute pathfinding when towers change
         state.flowField = Pathfinding.computeFlowField(Grid)
+        -- Track stats for recap screen
+        Economy.recordTowerBuilt()
     end)
 
     EventBus.on("creep_killed", function(data)
         Economy.addGold(data.reward)
+        -- Track stats for recap screen
+        Economy.recordKill()
+        Economy.recordGoldEarned(data.reward)
         -- Track kill to the tower that dealt the final blow
         local creep = data.creep
         if creep and creep.killedBy and not creep.killedBy.dead then
             creep.killedBy:recordKill()
+        end
+        -- Award bonus shards for boss kills
+        if creep and creep.isBoss then
+            Economy.addVoidShards(Config.VOID_SHARDS.bossBonus)
+
+            -- Award void crystals for boss kills based on current wave
+            local currentWave = Waves.getWaveNumber()
+            local crystalReward = Config.VOID_CRYSTALS.bossRewards[currentWave]
+            if crystalReward and crystalReward > 0 then
+                Economy.addVoidCrystals(crystalReward)
+                EventBus.emit("void_crystal_dropped", {
+                    amount = crystalReward,
+                    position = data.position,
+                })
+            end
+        end
+        -- 10% chance to drop a void shard on any kill
+        if math.random() < Config.VOID_SHARDS.dropChance then
+            local shardAmount = Config.VOID_SHARDS.dropAmount
+            Economy.addVoidShards(shardAmount)
+            EventBus.emit("void_shard_dropped", {
+                amount = shardAmount,
+                position = data.position,
+            })
         end
     end)
 
@@ -207,19 +252,25 @@ function Game.setupEvents()
     EventBus.on("void_clicked", function(data)
         -- Give gold for clicking
         Economy.voidClicked(data.income)
+        -- Track stats for recap screen
+        Economy.recordGoldEarned(data.income)
 
         -- Spawn one enemy immediately
         Game.spawnImmediateEnemy()
 
-        -- Update waves system with current anger level
-        Waves.setAngerLevel(data.angerLevel)
+        -- Update waves system with current tier
+        Waves.setTier(data.tier)
+    end)
+
+    EventBus.on("spawn_red_bosses", function(data)
+        Waves.spawnRedBosses(data.count)
     end)
 
     EventBus.on("window_resized", function(data)
-        -- Recreate canvases for background and lighting at the base resolution
+        -- Recreate canvases for background and post-processing at the base resolution
         -- (they are drawn at base res, then scaled by the transform)
         Background.regenerate(Grid.getPlayAreaWidth(), Config.SCREEN_HEIGHT)
-        Lighting.resize()
+        PostProcessing.resize()
     end)
 
     -- New tower attack spawn events
@@ -243,6 +294,34 @@ function Game.setupEvents()
             data.damage, data.sourceTower
         )
         table.insert(state.lightningProjectiles, bolt)
+    end)
+
+    EventBus.on("spawn_test_towers", function(data)
+        Game.spawnTestTowers()
+    end)
+
+    EventBus.on("game_won", function(data)
+        -- Award level completion shards
+        Economy.addVoidShards(data.shardReward)
+        -- Show victory recap screen
+        VictoryScreen.show()
+    end)
+
+    EventBus.on("game_over", function(data)
+        -- Show defeat recap screen
+        VictoryScreen.showDefeat()
+    end)
+
+    EventBus.on("skill_tree_changed", function(data)
+        -- Recalculate stats for all towers when skill tree changes
+        for _, tower in ipairs(state.towers) do
+            tower:recalculateStats()
+        end
+    end)
+
+    EventBus.on("wave_started", function(data)
+        -- Track wave reached for recap screen
+        Economy.setWaveReached(data.waveNumber)
     end)
 end
 
@@ -392,14 +471,29 @@ function Game.update(dt)
     -- Update settings menu (uses screen coordinates)
     Settings.update(screenMx, screenMy)
 
-    -- If settings menu or shortcuts overlay is open, pause game and show pointer cursor
-    if Settings.isVisible() or Shortcuts.isVisible() then
+    -- If settings menu, shortcuts overlay, skill tree, victory screen, or pause menu is open, pause game and show pointer cursor
+    if Settings.isVisible() or Shortcuts.isVisible() or SkillTree.isVisible() or VictoryScreen.isVisible() or PauseMenu.isVisible() then
+        -- Update skill tree hover state
+        if SkillTree.isVisible() then
+            SkillTree.update(mx, my)
+        end
+        -- Update victory screen hover state
+        if VictoryScreen.isVisible() then
+            VictoryScreen.update(mx, my)
+        end
+        -- Update pause menu hover state
+        if PauseMenu.isVisible() then
+            PauseMenu.update(mx, my)
+        end
         Cursor.setCursor(Cursor.POINTER)
         return
     end
 
     -- Cap delta time
     dt = math.min(dt, Config.MAX_DELTA_TIME)
+
+    -- Track time played (using real dt, not scaled)
+    Economy.updateTimePlayed(dt)
 
     -- Apply time scale
     dt = dt * Game.getTimeScale()
@@ -425,10 +519,6 @@ function Game.update(dt)
     end
 
     -- Update systems
-    Profiler.start("economy_update")
-    Economy.update(dt)
-    Profiler.stop("economy_update")
-
     Profiler.start("waves_update")
     Waves.update(dt, state.creeps)
     Profiler.stop("waves_update")
@@ -587,8 +677,8 @@ function Game.update(dt)
     -- Update atmosphere (uses real dt for smooth particles regardless of game speed)
     Atmosphere.update(math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME))
 
-    -- Update lighting (uses real dt for smooth animations)
-    Lighting.update(math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME))
+    -- Update post-processing (uses real dt for smooth animations)
+    PostProcessing.update(math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME))
 
     -- Update audio (uses real dt for ambient timing)
     Audio.update(math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME))
@@ -657,10 +747,12 @@ function Game.draw()
         love.graphics.rectangle("fill", 0, 0, windowW, windowH)
     end
 
-    -- Apply scaling transform for game content
-    love.graphics.push()
-    love.graphics.translate(offsetX, offsetY)
-    love.graphics.scale(scale, scale)
+    -- Begin post-processing pipeline (render to scene canvas at base resolution)
+    -- This must happen BEFORE applying transform so scene renders at 1:1
+    PostProcessing.beginFrame()
+
+    -- No transform needed when drawing to scene canvas - it's at base resolution
+    -- The transform will be applied when we draw the canvas to screen
 
     -- Draw procedural background first
     Profiler.start("background_draw")
@@ -686,6 +778,7 @@ function Game.draw()
     -- Draw Void (behind towers and creeps)
     Profiler.start("void_draw")
     if state.void then
+        state.void:drawSpewParticles()  -- Draw outward spewing particles (behind portal)
         state.void:draw()
         state.void:drawTears()  -- Draw spawn tears on top of void base
         state.void:drawSpawnParticles()  -- Draw spark particles
@@ -728,12 +821,17 @@ function Game.draw()
         state.towersSortDirty = false
     end
 
-    local sortedEntities = {}
-
-    -- Add ground effects (poison clouds, burning ground)
-    for _, effect in ipairs(state.groundEffects) do
-        table.insert(sortedEntities, { entity = effect, y = effect.y, type = "ground_effect" })
+    -- Draw all tower shadows first (behind everything)
+    for _, tower in ipairs(state.towersSortedByY) do
+        tower:drawShadow()
     end
+
+    -- Draw ground effects (poison clouds, burning ground) - flat on ground, always under entities
+    for _, effect in ipairs(state.groundEffects) do
+        effect:draw()
+    end
+
+    local sortedEntities = {}
 
     -- Add blackholes
     for _, hole in ipairs(state.blackholes) do
@@ -808,49 +906,33 @@ function Game.draw()
         Grid.drawHover(mx, my, canAfford, towerType)
     end
 
-    -- Pre-lighting glow pass: soft halos that survive the multiply pass
-    Profiler.start("glow_pass")
-    if Settings.isLightingEnabled() then
-        love.graphics.setBlendMode("add")
+    -- End scene rendering (stop drawing to scene canvas)
+    PostProcessing.endFrame()
 
-        -- Void glow halo
-        if state.void then
-            local voidColor = Config.LIGHTING.colors.void[state.void:getAngerLevel()] or Config.LIGHTING.colors.void[0]
-            local pulse = math.sin(love.timer.getTime() * 2) * 0.1 + 0.9
-            -- Outer soft halo
-            love.graphics.setColor(voidColor[1] * 0.15, voidColor[2] * 0.1, voidColor[3] * 0.2, 0.25 * pulse)
-            love.graphics.circle("fill", state.void.x, state.void.y, state.void.size * 2.5)
-            -- Inner brighter halo
-            love.graphics.setColor(voidColor[1] * 0.25, voidColor[2] * 0.15, voidColor[3] * 0.3, 0.3 * pulse)
-            love.graphics.circle("fill", state.void.x, state.void.y, state.void.size * 1.5)
-        end
+    -- Render bloom effect (extract glow sources and blur)
+    Profiler.start("bloom_render")
+    PostProcessing.renderBloom(
+        state.void,
+        state.creeps,
+        state.towers,
+        state.projectiles,
+        state.groundEffects,
+        state.lobbedProjectiles,
+        state.lightningProjectiles,
+        state.blackholes
+    )
+    Profiler.stop("bloom_render")
 
-        -- Creep glow halos
-        local creepColor = Config.LIGHTING.colors.creep
-        for _, creep in ipairs(state.creeps) do
-            if not creep.dead and not creep:isSpawning() then
-                local creepPulse = math.sin(love.timer.getTime() * 3.5 + creep.seed * 0.1) * 0.1 + 0.9
-                -- Soft purple glow behind each creep
-                love.graphics.setColor(creepColor[1] * 0.2, creepColor[2] * 0.1, creepColor[3] * 0.25, 0.35 * creepPulse)
-                love.graphics.circle("fill", creep.x, creep.y, creep.size * 2.2)
-            end
-        end
+    -- Apply scaling transform for drawing to screen
+    love.graphics.push()
+    love.graphics.translate(offsetX, offsetY)
+    love.graphics.scale(scale, scale)
 
-        love.graphics.setBlendMode("alpha")
-    end
-    Profiler.stop("glow_pass")
-
-    -- Apply lighting overlay (before vignette, after all game elements)
-    Profiler.start("lighting_render")
-    Lighting.render(state.towers, state.creeps, state.projectiles, state.void, state.groundEffects, state.chainLightnings)
-    Lighting.apply()
-    Profiler.stop("lighting_render")
+    -- Draw final composited result (scene + bloom)
+    PostProcessing.drawResult()
 
     -- Draw vignette overlay (atmospheric darkening at edges)
     Atmosphere.drawVignette()
-
-    -- Draw lighting toggle indicator
-    Lighting.drawIndicator()
 
     -- Draw UI (panel now contains all stats, void info, towers, upgrades)
     Profiler.start("panel_draw")
@@ -874,43 +956,69 @@ function Game.draw()
     Shortcuts.draw()
     love.graphics.pop()
 
-    -- Draw performance stats (top left, screen space)
-    local fps = love.timer.getFPS()
-    local stats = love.graphics.getStats()
-    local memKB = collectgarbage("count")
+    -- Draw skill tree overlay (modal, in game space)
+    love.graphics.push()
+    love.graphics.translate(offsetX, offsetY)
+    love.graphics.scale(scale, scale)
+    SkillTree.draw()
+    love.graphics.pop()
 
-    -- Count entities
-    local creepCount = #state.creeps
-    local towerCount = #state.towers
-    local projCount = #state.projectiles + #state.lobbedProjectiles + #state.lightningProjectiles
-    local effectCount = #state.groundEffects + #state.blackholes + #state.chainLightnings + #state.explosionBursts
-    local cadaverCount = #state.cadavers
+    -- Draw victory screen overlay (modal, in game space)
+    love.graphics.push()
+    love.graphics.translate(offsetX, offsetY)
+    love.graphics.scale(scale, scale)
+    VictoryScreen.draw()
+    love.graphics.pop()
 
-    -- Build stats text
-    local lines = {
-        string.format("FPS: %d", fps),
-        string.format("Draw: %d", stats.drawcalls),
-        string.format("Mem: %.1fMB", memKB / 1024),
-        string.format("Creeps: %d", creepCount),
-        string.format("Towers: %d", towerCount),
-        string.format("Proj: %d", projCount),
-        string.format("Effects: %d", effectCount),
-        string.format("Cadavers: %d", cadaverCount),
-    }
+    -- Draw pause menu overlay (modal, in game space)
+    love.graphics.push()
+    love.graphics.translate(offsetX, offsetY)
+    love.graphics.scale(scale, scale)
+    PauseMenu.draw()
+    love.graphics.pop()
 
-    love.graphics.setFont(Fonts.get("small"))
-    local lineHeight = 12
-    local panelWidth = 76
-    local panelHeight = #lines * lineHeight + 8
+    -- Draw debug overlay (top left, screen space)
+    if state.showDebug then
+        local fps = love.timer.getFPS()
+        local stats = love.graphics.getStats()
+        local memKB = collectgarbage("count")
 
-    -- Background
-    love.graphics.setColor(0, 0, 0, 0.6)
-    love.graphics.rectangle("fill", 4, 4, panelWidth, panelHeight)
+        -- Count entities
+        local creepCount = #state.creeps
+        local towerCount = #state.towers
+        local projCount = #state.projectiles + #state.lobbedProjectiles + #state.lightningProjectiles
+        local effectCount = #state.groundEffects + #state.blackholes + #state.chainLightnings + #state.explosionBursts
+        local cadaverCount = #state.cadavers
 
-    -- Text
-    love.graphics.setColor(1, 1, 1, 0.9)
-    for i, line in ipairs(lines) do
-        love.graphics.print(line, 8, 4 + (i - 1) * lineHeight + 2)
+        -- Build stats text
+        local lines = {
+            string.format("FPS: %d", fps),
+            string.format("Draw: %d", stats.drawcalls),
+            string.format("Mem: %.1fMB", memKB / 1024),
+            string.format("Creeps: %d", creepCount),
+            string.format("Towers: %d", towerCount),
+            string.format("Proj: %d", projCount),
+            string.format("Effects: %d", effectCount),
+            string.format("Cadavers: %d", cadaverCount),
+        }
+
+        love.graphics.setFont(Fonts.get("small"))
+        local lineHeight = 12
+        local panelWidth = 76
+        local panelHeight = #lines * lineHeight + 8
+
+        -- Background
+        love.graphics.setColor(0, 0, 0, 0.6)
+        love.graphics.rectangle("fill", 4, 4, panelWidth, panelHeight)
+
+        -- Text
+        love.graphics.setColor(1, 1, 1, 0.9)
+        for i, line in ipairs(lines) do
+            love.graphics.print(line, 8, 4 + (i - 1) * lineHeight + 2)
+        end
+
+        -- Draw bloom debug minimap next to stats
+        Bloom.drawDebug(panelWidth + 12, 4)
     end
 
     -- Draw custom cursor (always on top, in screen space)
@@ -996,16 +1104,66 @@ local function _tryPlaceTower(gridX, gridY)
 end
 
 function Game.mousepressed(screenX, screenY, button)
-    if button ~= 1 then return end
-
     -- Priority 0: Settings menu (if visible) - uses screen coordinates
     if Settings.isVisible() then
-        Settings.handleClick(screenX, screenY)
+        if button == 1 then
+            Settings.handleClick(screenX, screenY)
+        end
         return
     end
 
     -- Convert to game coordinates for all other interactions
     local x, y = Settings.screenToGame(screenX, screenY)
+
+    -- Priority 0.25: Pause menu (if visible) - uses game coordinates
+    if PauseMenu.isVisible() then
+        if button == 1 then
+            local result = PauseMenu.handleClick(x, y)
+            if result then
+                if result.action == "resume" then
+                    PauseMenu.hide()
+                elseif result.action == "abandon" then
+                    PauseMenu.hide()
+                    VictoryScreen.showDefeat()
+                end
+            end
+        end
+        return
+    end
+
+    -- Priority 0.5: Victory screen (if visible) - uses game coordinates
+    if VictoryScreen.isVisible() then
+        if button == 1 then
+            local result = VictoryScreen.handleClick(x, y)
+            if result then
+                if result.action == "restart" then
+                    Game.restart()
+                elseif result.action == "skill_tree" then
+                    VictoryScreen.hide()
+                    SkillTree.activate()
+                end
+            end
+        end
+        return
+    end
+
+    -- Priority 0.6: Skill tree scene (if active) - uses game coordinates
+    if SkillTree.isActive() then
+        local result = SkillTree.handleClick(x, y, button)
+        if type(result) == "table" and result.action then
+            if result.action == "start_run" then
+                SkillTree.deactivate()
+                Game.restart()
+            elseif result.action == "back" then
+                SkillTree.deactivate()
+                VictoryScreen.show()  -- Return to recap screen
+            end
+        end
+        return
+    end
+
+    -- Only left click for the rest
+    if button ~= 1 then return end
 
     -- Priority 1: Tooltip clicks (if visible)
     if Tooltip.isPointInside(x, y) then
@@ -1121,6 +1279,12 @@ function Game.mousemoved(screenX, screenY, dx, dy)
 end
 
 function Game.mousereleased(screenX, screenY, button)
+    -- Handle skill tree panning release
+    if SkillTree.isActive() then
+        local x, y = Settings.screenToGame(screenX, screenY)
+        SkillTree.handleMouseReleased(x, y, button)
+    end
+
     if button == 1 then
         -- Handle settings slider release (uses screen coordinates)
         if Settings.isVisible() then
@@ -1129,6 +1293,14 @@ function Game.mousereleased(screenX, screenY, button)
 
         state.isDragging = false
         state.lastPlacedCell = nil
+    end
+end
+
+function Game.wheelmoved(x, y)
+    -- Handle skill tree zoom
+    if SkillTree.isActive() then
+        SkillTree.handleWheel(x, y)
+        return
     end
 end
 
@@ -1143,6 +1315,31 @@ function Game.keypressed(key)
     if Shortcuts.isVisible() then
         if key == "escape" then
             Shortcuts.hide()
+        end
+        return
+    end
+
+    -- Handle keys when pause menu is visible
+    if PauseMenu.isVisible() then
+        if key == "escape" then
+            PauseMenu.hide()
+        end
+        return
+    end
+
+    -- Handle keys when skill tree scene is active
+    if SkillTree.isActive() then
+        if SkillTree.handleKeyPressed(key) then
+            return
+        end
+        -- ESC does nothing in skill tree scene - must click Start Run
+        return
+    end
+
+    -- Handle keys when victory screen is visible
+    if VictoryScreen.isVisible() then
+        if key == "escape" then
+            love.event.quit()
         end
         return
     end
@@ -1199,10 +1396,10 @@ function Game.keypressed(key)
         return
     end
 
-    -- Lighting toggle
+    -- Bloom toggle
     if key == "l" then
-        Lighting.toggle()
-        Lighting.showIndicator()
+        local enabled = Bloom.toggle()
+        Settings.setBloomEnabled(enabled)
         return
     end
 
@@ -1213,7 +1410,13 @@ function Game.keypressed(key)
         return
     end
 
-    -- Escape: Cancel tower placement, deselect tower, or quit
+    -- Debug overlay toggle
+    if key == "d" then
+        state.showDebug = not state.showDebug
+        return
+    end
+
+    -- Escape: Cancel tower placement, deselect tower, or show pause menu
     if key == "escape" then
         -- First, cancel tower placement selection
         if Panel.getSelectedTower() then
@@ -1221,14 +1424,61 @@ function Game.keypressed(key)
         -- Then, deselect placed tower
         elseif state.selectedTower then
             _selectTower(nil)
+        -- Finally, show pause menu
         else
-            love.event.quit()
+            PauseMenu.show()
         end
     end
 end
 
 function Game.quit()
     -- Save game state here when implemented
+end
+
+function Game.restart()
+    -- Hide skill tree scene and victory screen (if either is active)
+    SkillTree.deactivate()
+    VictoryScreen.hide()
+
+    -- Clear all game entities
+    state.towers = {}
+    state.creeps = {}
+    state.projectiles = {}
+    state.cadavers = {}
+    state.groundEffects = {}
+    state.chainLightnings = {}
+    state.lobbedProjectiles = {}
+    state.blackholes = {}
+    state.lightningProjectiles = {}
+    state.explosionBursts = {}
+    state.towersSortedByY = {}
+    state.towersSortDirty = true
+    state.selectedTower = nil
+    state.hoveredTower = nil
+    state.gameSpeedIndex = 1
+    state.autoClickTimer = 0
+
+    -- Reset grid
+    Grid.init(Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT)
+
+    -- Reset systems
+    Economy.init()
+    Waves.init()
+
+    -- Recompute pathfinding
+    state.flowField = Pathfinding.computeFlowField(Grid)
+
+    -- Reset Void entity
+    local voidX, voidY = Grid.getPortalCenter()
+    state.void = Void(voidX, voidY)
+
+    -- Reset Exit Portal
+    local exitX, exitY = Grid.getExitPortalCenter()
+    state.exitPortal = ExitPortal(exitX, exitY)
+
+    -- Reset UI
+    Panel.init(Grid.getPlayAreaWidth(), Grid.getPanelWidth(), Config.SCREEN_HEIGHT)
+    Tooltip.hide()
 end
 
 -- Expose state for systems that need it

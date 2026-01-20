@@ -142,8 +142,8 @@ function BurningGround:draw()
     end
 end
 
--- Get light parameters for the lighting system
-function BurningGround:getLightParams()
+-- Get glow parameters for the bloom system
+function BurningGround:getGlowParams()
     local progress = self.remaining / self.duration
     local color = Config.STATUS_EFFECTS.burn.color
 
@@ -153,8 +153,10 @@ function BurningGround:getLightParams()
         radius = self.radius * 1.3,
         color = color,
         intensity = 0.7 * progress,
-        flicker = true,
     }
 end
+
+-- Alias for backward compatibility
+BurningGround.getLightParams = BurningGround.getGlowParams
 
 return BurningGround

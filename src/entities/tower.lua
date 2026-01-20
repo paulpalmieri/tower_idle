@@ -11,6 +11,8 @@ local TurretConcepts = require("src.rendering.turret_concepts")
 local EventBus = require("src.core.event_bus")
 local StatusEffects = require("src.systems.status_effects")
 local GroundEffects = require("src.rendering.ground_effects")
+local Dither = require("src.rendering.dither")
+local SkillTreeData = require("src.systems.skill_tree_data")
 
 -- Lazy-load new entity classes to avoid circular requires
 local LobbedProjectile, Blackhole, LightningProjectile, PoisonCloud
@@ -120,9 +122,16 @@ end
 function Tower:recalculateStats()
     local bonuses = Config.UPGRADES.bonusPerLevel
     local levelBonus = self.level - 1  -- Level 1 = no bonus, level 5 = +4 levels of bonus
-    self.damage = self.baseDamage * (1 + levelBonus * bonuses.damage)
-    self.range = self.baseRange * (1 + levelBonus * bonuses.range)
-    self.fireRate = self.baseFireRate * (1 + levelBonus * bonuses.fireRate)
+
+    -- Calculate base stats with level bonuses
+    local baseDamage = self.baseDamage * (1 + levelBonus * bonuses.damage)
+    local baseRange = self.baseRange * (1 + levelBonus * bonuses.range)
+    local baseFireRate = self.baseFireRate * (1 + levelBonus * bonuses.fireRate)
+
+    -- Apply skill tree bonuses
+    self.damage = SkillTreeData.applyStatBonus(self.towerType, "damage", baseDamage)
+    self.range = SkillTreeData.applyStatBonus(self.towerType, "range", baseRange)
+    self.fireRate = SkillTreeData.applyStatBonus(self.towerType, "fireRate", baseFireRate)
 end
 
 function Tower:getUpgradeCost()
@@ -666,6 +675,55 @@ function Tower:updateLobbedAttack(dt, creeps, projectiles)
     end
 end
 
+-- Draw tower shadow (call before drawing towers for proper layering)
+function Tower:drawShadow()
+    local shadowConfig = Config.TOWER_SHADOW
+    local ditherConfig = Config.TOWER_DITHER
+
+    -- Don't draw during early build phase
+    if self.buildProgress < 0.3 then return end
+
+    -- Fade in during build
+    local buildFade = 1
+    if self.buildProgress < 1 then
+        buildFade = (self.buildProgress - 0.3) / 0.7
+    end
+
+    -- Draw dithering first (corruption stain underneath tower)
+    if ditherConfig and ditherConfig.enabled then
+        local ditherY = self.y + ditherConfig.offsetY
+        local ditherAlpha = ditherConfig.alpha * buildFade
+        -- Pass tower color for edge bleed effect
+        local towerColor = self.color or {0.5, 0.5, 0.5}
+        Dither.drawGroundingRing(
+            self.x,
+            ditherY,
+            ditherConfig.radius,
+            ditherConfig.radius * ditherConfig.yRatio,
+            nil,  -- unused param
+            towerColor,
+            ditherAlpha
+        )
+    end
+
+    -- Draw ellipse shadow
+    if shadowConfig.enabled then
+        local shadowAlpha = shadowConfig.alpha * buildFade
+        local baseRadius = Config.CELL_SIZE * 0.4 * shadowConfig.radiusMultiplier
+        local shadowRadiusX = baseRadius
+        local shadowRadiusY = baseRadius * shadowConfig.yRatio
+        local shadowY = self.y + shadowConfig.offsetY
+
+        love.graphics.setColor(
+            shadowConfig.color[1],
+            shadowConfig.color[2],
+            shadowConfig.color[3],
+            shadowAlpha
+        )
+        love.graphics.ellipse("fill", self.x, shadowY, shadowRadiusX, shadowRadiusY)
+    end
+end
+
 function Tower:draw()
     -- Calculate recoil offset (0-1 value for animation)
     local recoilOffset = PixelArt.calculateRecoil(self.recoilTimer, self.recoilDuration)
@@ -823,20 +881,15 @@ function Tower:drawBeamEffects()
     end
 end
 
--- Get light parameters for the lighting system
-function Tower:getLightParams()
-    local lightingCfg = Config.LIGHTING
+-- Get glow parameters for the bloom system
+function Tower:getGlowParams()
+    local postCfg = Config.POST_PROCESSING
     local towerType = self.towerType
 
     -- Get base values from config
-    local radius = lightingCfg.radii.tower[towerType] or 60
-    local color = lightingCfg.colors.tower[towerType] or self.color
-    local intensity = lightingCfg.intensities.tower[towerType] or 0.5
-
-    -- Scale radius by tower range for attacking towers
-    if self.range and self.range > 0 then
-        radius = self.range * 0.5
-    end
+    local radius = postCfg.radii.tower or 80
+    local color = postCfg.colors.tower[towerType] or self.color
+    local intensity = 1.0
 
     return {
         x = self.x,
@@ -844,9 +897,10 @@ function Tower:getLightParams()
         radius = radius,
         color = color,
         intensity = intensity,
-        flicker = true,  -- Towers can use flicker in ember mode
-        flickerSeed = self.gridX * 100 + self.gridY,
     }
 end
+
+-- Alias for backward compatibility
+Tower.getLightParams = Tower.getGlowParams
 
 return Tower

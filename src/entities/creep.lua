@@ -6,7 +6,6 @@ local Object = require("lib.classic")
 local Config = require("src.config")
 local Procedural = require("src.rendering.procedural")
 local PixelDraw = require("src.rendering.pixel_draw")
-local Settings = require("src.ui.settings")
 local StatusEffects = require("src.systems.status_effects")
 
 local Creep = Object:extend()
@@ -23,16 +22,20 @@ local seedCounter = 0
 -- Perspective scale for ground elements (must match ground_effects.lua)
 local PERSPECTIVE_Y_SCALE = 0.9
 
-function Creep:new(x, y, creepType)
+function Creep:new(x, y, creepType, healthMultiplier, speedMultiplier)
     self.x = x
     self.y = y
     self.creepType = creepType
 
     local stats = Config.CREEPS[creepType]
-    self.maxHp = stats.hp
+    -- Apply health multiplier (later spawns in wave have more HP)
+    local hpMult = healthMultiplier or 1.0
+    self.maxHp = math.floor(stats.hp * hpMult)
     self.hp = self.maxHp
-    self.baseSpeed = stats.speed
-    self.speed = stats.speed         -- Current speed (modified by effects)
+    -- Apply speed multiplier (tier bonuses)
+    local spdMult = speedMultiplier or 1.0
+    self.baseSpeed = stats.speed * spdMult
+    self.speed = self.baseSpeed      -- Current speed (modified by effects)
     self.reward = stats.reward
     self.color = stats.color
     self.size = stats.size
@@ -82,6 +85,17 @@ function Creep:new(x, y, creepType)
         self.cfg = Config.VOID_SPIDER
         self.pixelSize = self.cfg.pixelSize or 2
         self:generateSpiderPixels()
+    elseif creepType == "voidBoss" then
+        self.cfg = Config.VOID_BOSS
+        self.pixelSize = self.cfg.pixelSize or 4
+        self.isBoss = true
+        self:generatePixels()  -- Uses same generation as voidSpawn but with boss config
+    elseif creepType == "redBoss" then
+        self.cfg = Config.RED_BOSS
+        self.pixelSize = self.cfg.pixelSize or 4
+        self.isBoss = true
+        self.isRedBoss = true
+        self:generatePixels()  -- Uses same generation as voidSpawn but with red boss config
     else
         self.cfg = Config.VOID_SPAWN
         self.pixelSize = self.cfg.pixelSize or 3
@@ -778,11 +792,7 @@ function Creep:draw()
     local shadowY = self.y + self.size * 1.3
     love.graphics.ellipse("fill", self.x, shadowY, shadowWidth, shadowHeight)
 
-    -- OPTIMIZATION: Pre-compute interior noise once per creep (not per pixel)
-    -- These values are interpolated across pixels based on position
     local radius = self.size
-    local baseN1 = Procedural.fbm(t * 0.8, t * 0.2, self.seed, 2)
-    local baseN2 = Procedural.fbm(-t * 0.4, t * 0.6, self.seed + 50, 2)
 
     -- Pre-compute time-based wobble factor
     local wobbleTime = t * cfg.wobbleSpeed
@@ -792,20 +802,26 @@ function Creep:draw()
     local sparkleTimeX = math.floor(t * 8)
     local sparkleTimeY = math.floor(t * 5)
 
-    -- Draw each pixel with animated void effects
+    -- Check for slow effect - will apply blue glow tint to all pixels
+    local hasSlowEffect = StatusEffects.hasEffect(self, StatusEffects.SLOW) and not self:isSpawning()
+    local slowGlowIntensity = 0
+    local slowColor = nil
+    if hasSlowEffect then
+        slowColor = Config.STATUS_EFFECTS.slow.color
+        -- Pulsing glow intensity
+        slowGlowIntensity = 0.25 + sin(t * 4) * 0.1
+    end
+
+    -- Draw each pixel with animated void effects (matching portal style)
     for _, p in ipairs(self.pixels) do
-        -- OPTIMIZATION: Use pre-computed wobblePhase instead of fbm() per pixel
-        -- Simple sine wave with phase offset creates same organic wobble effect
         local wobbleNoise = math.sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
         local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
 
         -- Skip pixels outside the current animated boundary
-        -- (Interior zone pixels always pass, boundary zone pixels need check)
         if p.zone == "boundary" and p.dist >= animatedEdgeRadius then
             goto continue
         end
 
-        -- Determine if this pixel is near the edge (for glow effect)
         local isEdge = p.dist > animatedEdgeRadius - ps * 1.5
 
         -- Apply scale from center (with death squash on Y axis)
@@ -816,65 +832,36 @@ function Creep:draw()
         local pixelW = ps * scale
         local pixelH = ps * scale * deathSquashY
 
-        -- OPTIMIZATION: Use per-creep base noise + per-pixel variation (cheaper than fbm per pixel)
-        local n1 = baseN1 + p.rnd * 0.3 + p.distNorm * 0.2
-        local n2 = baseN2 + p.rnd2 * 0.2
-        local n3 = p.rnd  -- Static per-pixel variation
+        -- Check if in squared core region (pitch black center)
+        local coreSize = cfg.coreSize or 5
+        local inCore = abs(p.relX) < coreSize and abs(p.relY) < coreSize
 
-        -- Swirling pattern (cheap - just sin)
-        local swirl = math.sin(p.angle * 3 + t * cfg.swirlSpeed + p.distNorm * 4) * 0.5 + 0.5
-
-        -- Random sparkles - use pre-computed time values
-        local sparkle = Procedural.hash(p.px + sparkleTimeX, p.py + sparkleTimeY, self.seed + 333)
-        local isSpark = sparkle > sparkleThreshold
-
-        -- Color calculation
         local r, g, b
 
-        if isSpark then
-            -- Bright sparkle
+        -- Sparkles
+        local sparkle = Procedural.hash(p.px + sparkleTimeX, p.py + sparkleTimeY, self.seed + 333)
+        if sparkle > sparkleThreshold then
             r, g, b = colors.sparkle[1], colors.sparkle[2], colors.sparkle[3]
+        elseif inCore then
+            -- Deep void core (pitch black)
+            local n = Procedural.hash(p.px + floor(t * 2), p.py, self.seed) * 0.01
+            r = colors.core[1] + n
+            g = colors.core[2] + n * 0.5
+            b = colors.core[3] + n
         elseif isEdge then
-            -- Edge glow - brighter purple
+            -- Edge glow
             local pulse = math.sin(t * cfg.pulseSpeed + p.angle * 2) * 0.3 + 0.7
             r = colors.edgeGlow[1] * pulse
             g = colors.edgeGlow[2] * pulse
             b = colors.edgeGlow[3] * pulse
         else
-            -- Interior void texture
-            local v = n1 * 0.5 + n2 * 0.3 + swirl * 0.2
-
-            -- Interpolate between core and mid based on noise and distance
-            local blend = v + p.distNorm * 0.3
-            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * blend + p.rnd * 0.05
-            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * blend + p.rnd2 * 0.02
-            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * blend + p.rnd * 0.1
-
-            -- Random darker spots
-            if p.rnd > 0.85 then
-                r, g, b = r * 0.5, g * 0.5, b * 0.7
-            end
-
-            -- Random brighter purple tints
-            if p.rnd2 > 0.8 then
-                r = r + 0.08
-                b = b + 0.12
-            end
-
-            -- OPTIMIZATION: Simplified vertical tear streaks using pre-computed values
-            -- Instead of fbm per pixel, use a combination of static rnd values with time
-            local tearBase = p.rnd * 0.5 + p.rnd2 * 0.3 + math.sin(p.py * 0.5 + t * 0.5) * 0.2
-            if tearBase > 0.58 and p.rnd > 0.4 then
-                local bright = (tearBase - 0.58) * 2 + n3 * 0.2
-                r = r + bright * 0.3
-                b = b + bright * 0.4
-            end
+            -- Interior (dark purple)
+            local swirl = math.sin(p.angle * 3 + t * cfg.swirlSpeed + p.distNorm * 4) * 0.5 + 0.5
+            local v = p.rnd * 0.3 + swirl * 0.2 + p.distNorm * 0.3
+            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * v
+            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * v
+            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * v
         end
-
-        -- Pulsing glow
-        local pulse = math.sin(t * cfg.pulseSpeed + p.distNorm * 3 + p.rnd * 4) * 0.06
-        r = math.max(0, math.min(1, r + pulse))
-        b = math.max(0, math.min(1, b + pulse * 0.5))
 
         -- Apply hit flash (additive white)
         if self.hitFlashTimer > 0 then
@@ -892,40 +879,17 @@ function Creep:draw()
             b = b + (gray - b) * deathDesaturate
         end
 
-        -- Self-illumination: boost brightness when lighting is enabled
-        if Settings.isLightingEnabled() then
-            local boost = Config.LIGHTING.selfIllumination and Config.LIGHTING.selfIllumination.creep or 1.35
-            r = math.min(1, r * boost)
-            g = math.min(1, g * boost)
-            b = math.min(1, b * boost)
+        -- Apply slow effect blue glow tint
+        if hasSlowEffect then
+            r = r + (slowColor[1] - r) * slowGlowIntensity
+            g = g + (slowColor[2] - g) * slowGlowIntensity
+            b = b + (slowColor[3] - b) * slowGlowIntensity
         end
 
         love.graphics.setColor(r * alpha, g * alpha, b * alpha, alpha)
         PixelDraw.rect(screenX, screenY, pixelW, pixelH)
 
         ::continue::
-    end
-
-    -- Draw frost tint overlay for slow effect
-    if StatusEffects.hasEffect(self, StatusEffects.SLOW) and not self:isSpawning() then
-        local slowColor = Config.STATUS_EFFECTS.slow.color
-        local slowAlpha = 0.25
-        local frostPulse = math.sin(self.time * 4) * 0.05 + 0.2
-
-        -- Draw frost crystals around the creep
-        love.graphics.setColor(slowColor[1], slowColor[2], slowColor[3], frostPulse)
-        love.graphics.circle("fill", self.x, self.y, self.size * scale * 1.2)
-
-        -- Draw small ice crystal particles
-        local crystalCount = 4
-        for i = 1, crystalCount do
-            local angle = (i / crystalCount) * math.pi * 2 + self.time * 0.5
-            local dist = self.size * scale * 0.8
-            local cx = self.x + math.cos(angle) * dist
-            local cy = self.y + math.sin(angle) * dist
-            love.graphics.setColor(slowColor[1], slowColor[2], slowColor[3], slowAlpha + frostPulse)
-            love.graphics.circle("fill", cx, cy, 2)
-        end
     end
 
     -- Draw pixel art health bar when damaged (only when fully spawned)
@@ -986,6 +950,16 @@ function Creep:drawSpider()
 
     if scale <= 0 or alpha <= 0.01 then return end
 
+    -- Check for slow effect - will apply blue glow tint to all pixels
+    local hasSlowEffect = StatusEffects.hasEffect(self, StatusEffects.SLOW) and not self:isSpawning()
+    local slowGlowIntensity = 0
+    local slowColor = nil
+    if hasSlowEffect then
+        slowColor = Config.STATUS_EFFECTS.slow.color
+        -- Pulsing glow intensity
+        slowGlowIntensity = 0.25 + sin(t * 4) * 0.1
+    end
+
     -- Draw shadow
     love.graphics.setBlendMode("alpha")
     love.graphics.setColor(0, 0, 0, 0.3 * alpha)
@@ -1002,15 +976,13 @@ function Creep:drawSpider()
     local sparkleTimeX = math.floor(t * 8)
     local sparkleTimeY = math.floor(t * 5)
 
-    -- OPTIMIZATION: Pre-compute base noise for leg coloring
-    local legBaseN1 = Procedural.fbm(t * 0.8, t * 0.2, self.seed, 2)
-
-    -- Draw legs first (behind body) - with full void texture
+    -- Draw legs first (behind body) - matching portal style
     local legPhases = {0, math.pi * 0.5, math.pi, math.pi * 1.5}
     for _, lp in ipairs(self.legPixels) do
-        local bob = math.sin(bobPhase + legPhases[lp.legIdx]) * legCfg.bobAmount * scale
+        -- Snap bob offset to pixel grid to prevent sub-pixel gaps
+        local rawBob = math.sin(bobPhase + legPhases[lp.legIdx]) * legCfg.bobAmount * scale
+        local bob = floor(rawBob + 0.5)
 
-        -- OPTIMIZATION: Use pre-computed wobblePhase instead of fbm per pixel
         local wobbleNoise = math.sin(wobbleTime + lp.wobblePhase) * 0.5 + 0.5
         local animatedEdge = 1.0 + lp.baseEdgeNoise * 0.2 + wobbleNoise * cfg.wobbleAmount * 0.2
 
@@ -1026,7 +998,6 @@ function Creep:drawSpider()
         local pixelW = ps * scale
         local pixelH = ps * scale * deathSquashY
 
-        -- Void texture coloring (same as body)
         local r, g, b
 
         local sparkle = Procedural.hash(lp.px + sparkleTimeX, lp.py + sparkleTimeY, self.seed + 333)
@@ -1038,12 +1009,11 @@ function Creep:drawSpider()
             g = colors.edgeGlow[2] * pulse
             b = colors.edgeGlow[3] * pulse
         else
-            -- OPTIMIZATION: Use per-creep base noise + per-pixel variation
-            local n1 = legBaseN1 + lp.rnd * 0.3 + lp.dist * 0.2
-            local blend = n1 * 0.5 + lp.dist * 0.3
-            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * blend
-            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * blend
-            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * blend
+            -- Interior (dark - legs are small so no core check needed)
+            local v = lp.rnd * 0.3 + lp.dist * 0.3
+            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * v
+            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * v
+            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * v
         end
 
         -- Hit flash
@@ -1060,9 +1030,11 @@ function Creep:drawSpider()
             b = b + (gray - b) * deathDesaturate
         end
 
-        if Settings.isLightingEnabled() then
-            local boost = Config.LIGHTING.selfIllumination and Config.LIGHTING.selfIllumination.creep or 1.35
-            r, g, b = math.min(1, r * boost), math.min(1, g * boost), math.min(1, b * boost)
+        -- Apply slow effect blue glow tint
+        if hasSlowEffect then
+            r = r + (slowColor[1] - r) * slowGlowIntensity
+            g = g + (slowColor[2] - g) * slowGlowIntensity
+            b = b + (slowColor[3] - b) * slowGlowIntensity
         end
 
         love.graphics.setColor(r * alpha, g * alpha, b * alpha, alpha)
@@ -1071,13 +1043,9 @@ function Creep:drawSpider()
         ::continue_leg::
     end
 
-    -- OPTIMIZATION: Pre-compute base noise for body coloring
-    local bodyBaseN1 = Procedural.fbm(t * 0.8, t * 0.2, self.seed, 2)
-    local bodyBaseN2 = Procedural.fbm(-t * 0.4, t * 0.6, self.seed + 50, 2)
-
-    -- Draw body pixels (elongated rift)
+    -- Draw body pixels (elongated rift) - matching portal style
+    local coreSize = cfg.coreSize or 4
     for _, p in ipairs(self.bodyPixels) do
-        -- OPTIMIZATION: Use pre-computed wobblePhase instead of fbm per pixel
         local wobbleNoise = math.sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
         local animatedEdge = 1.0 + p.baseEdgeNoise * 0.15 + wobbleNoise * cfg.wobbleAmount * 0.15
 
@@ -1092,37 +1060,34 @@ function Creep:drawSpider()
         local pixelW = ps * scale
         local pixelH = ps * scale * deathSquashY
 
+        -- Check if in squared core region (pitch black center)
+        local inCore = abs(p.relX) < coreSize and abs(p.relY) < coreSize
+
         local r, g, b
 
         -- Sparkles
         local sparkle = Procedural.hash(p.px + sparkleTimeX, p.py + sparkleTimeY, self.seed + 333)
         if sparkle > cfg.sparkleThreshold then
             r, g, b = colors.sparkle[1], colors.sparkle[2], colors.sparkle[3]
+        elseif inCore then
+            -- Deep void core (pitch black)
+            local n = Procedural.hash(p.px + floor(t * 2), p.py, self.seed) * 0.01
+            r = colors.core[1] + n
+            g = colors.core[2] + n * 0.5
+            b = colors.core[3] + n
         elseif isEdge then
             local pulse = math.sin(t * cfg.pulseSpeed + p.angle * 2) * 0.3 + 0.7
             r = colors.edgeGlow[1] * pulse
             g = colors.edgeGlow[2] * pulse
             b = colors.edgeGlow[3] * pulse
         else
-            -- OPTIMIZATION: Use per-creep base noise + per-pixel variation
-            local n1 = bodyBaseN1 + p.rnd * 0.3 + p.distNorm * 0.2
-            local n2 = bodyBaseN2 + p.rnd2 * 0.2
+            -- Interior (dark purple)
             local swirl = math.sin(p.angle * 3 + t * cfg.swirlSpeed + p.dist * 4) * 0.5 + 0.5
-            local v = n1 * 0.5 + n2 * 0.3 + swirl * 0.2
-            local blend = v + p.dist * 0.2
-
-            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * blend + p.rnd * 0.05
-            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * blend + p.rnd2 * 0.02
-            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * blend + p.rnd * 0.1
-
-            if p.rnd > 0.85 then r, g, b = r * 0.5, g * 0.5, b * 0.7 end
-            if p.rnd2 > 0.8 then r, b = r + 0.08, b + 0.12 end
+            local v = p.rnd * 0.3 + swirl * 0.2 + p.dist * 0.3
+            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * v
+            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * v
+            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * v
         end
-
-        -- Pulse
-        local pulse = math.sin(t * cfg.pulseSpeed + p.dist * 3 + p.rnd * 4) * 0.06
-        r = math.max(0, math.min(1, r + pulse))
-        b = math.max(0, math.min(1, b + pulse * 0.5))
 
         -- Hit flash
         if self.hitFlashTimer > 0 then
@@ -1138,23 +1103,17 @@ function Creep:drawSpider()
             b = b + (gray - b) * deathDesaturate
         end
 
-        if Settings.isLightingEnabled() then
-            local boost = Config.LIGHTING.selfIllumination and Config.LIGHTING.selfIllumination.creep or 1.35
-            r, g, b = math.min(1, r * boost), math.min(1, g * boost), math.min(1, b * boost)
+        -- Apply slow effect blue glow tint
+        if hasSlowEffect then
+            r = r + (slowColor[1] - r) * slowGlowIntensity
+            g = g + (slowColor[2] - g) * slowGlowIntensity
+            b = b + (slowColor[3] - b) * slowGlowIntensity
         end
 
         love.graphics.setColor(r * alpha, g * alpha, b * alpha, alpha)
         PixelDraw.rect(screenX, screenY, pixelW, pixelH)
 
         ::continue_body::
-    end
-
-    -- Frost overlay for slow effect
-    if StatusEffects.hasEffect(self, StatusEffects.SLOW) and not self:isSpawning() then
-        local slowColor = Config.STATUS_EFFECTS.slow.color
-        local frostPulse = math.sin(t * 4) * 0.05 + 0.2
-        love.graphics.setColor(slowColor[1], slowColor[2], slowColor[3], frostPulse)
-        love.graphics.circle("fill", self.x, self.y, self.size * scale * 1.2)
     end
 
     -- Health bar when damaged
@@ -1178,22 +1137,24 @@ function Creep:drawSpider()
     end
 end
 
--- Get light parameters for the lighting system
-function Creep:getLightParams()
-    -- Don't emit light if dead or still in spawn animation
+-- Get glow parameters for the bloom system
+function Creep:getGlowParams()
+    -- Don't emit glow if dead or still in spawn animation
     if self.dead then return nil end
     if self:isSpawning() then return nil end
 
-    local lightingCfg = Config.LIGHTING
+    local postCfg = Config.POST_PROCESSING
 
     return {
         x = self.x,
         y = self.y,
-        radius = lightingCfg.radii.creep or (self.size * 1.5),
-        color = lightingCfg.colors.creep or {0.6, 0.3, 0.8},
-        intensity = lightingCfg.intensities.creep or 0.4,
-        flicker = false,
+        radius = postCfg.radii.creep or (self.size * 1.5),
+        color = postCfg.colors.creep or {0.6, 0.3, 0.8},
+        intensity = 1.0,
     }
 end
+
+-- Alias for backward compatibility
+Creep.getLightParams = Creep.getGlowParams
 
 return Creep

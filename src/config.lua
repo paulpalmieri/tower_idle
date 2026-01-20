@@ -37,8 +37,6 @@ Config.VOID_BUFFER = 0.5       -- Buffer below void where creeps move before ent
 
 Config.STARTING_GOLD = 10000
 Config.STARTING_LIVES = 20
-Config.BASE_INCOME = 10
-Config.INCOME_TICK_SECONDS = 5
 Config.MAX_OFFLINE_HOURS = 4
 
 -- =============================================================================
@@ -116,6 +114,30 @@ Config.TOWER_BARREL_LENGTH = 1.2  -- Multiplier of size
 Config.TOWER_BUILD = {
     duration = 5.0,           -- Total build time in seconds
     basePhaseDuration = 0.8,  -- Time before void entity starts appearing
+}
+
+-- Tower shadow (grounding effect)
+Config.TOWER_SHADOW = {
+    enabled = false,          -- Disabled in favor of dithering
+    yRatio = 0.9,
+    radiusMultiplier = 1.1,
+    offsetY = 8,
+    alpha = 0.35,
+    color = {0.02, 0.01, 0.03},
+}
+
+-- Tower dithering (pixel-art grounding effect at tower base)
+Config.TOWER_DITHER = {
+    enabled = true,
+    pixelSize = 4,            -- Match background pixel size (crunchy retro look)
+    yRatio = 0.5,             -- Flattened oval for perspective
+    radius = 36,              -- Extends slightly beyond tower base
+    offsetY = 12,             -- Centered beneath tower base
+    alpha = 0.5,              -- More subtle
+    -- Dark void corruption stain
+    coreColor = {0.02, 0.01, 0.04},  -- Deep desaturated indigo (almost black)
+    coreRadius = 0.5,                -- Core extends to 50% of radius
+    towerColorBlend = 0,             -- No tower color, pure void
 }
 
 -- =============================================================================
@@ -256,7 +278,6 @@ Config.CREEPS = {
         hp = 50,
         speed = 50,           -- pixels per second
         reward = 8,           -- gold on kill
-        income = 10,          -- income per tick when sent
         sendCost = 100,       -- cost to send
         size = 14,
         color = {0.5, 0.2, 0.7},
@@ -266,36 +287,57 @@ Config.CREEPS = {
         hp = 25,              -- Fragile (lower than voidSpawn)
         speed = 70,           -- Fast (higher than voidSpawn)
         reward = 4,           -- Lower reward
-        income = 6,           -- Lower income
         sendCost = 60,        -- Cheaper to send
         size = 12,            -- Slightly smaller body
         color = {0.6, 0.2, 0.8},
+    },
+    voidBoss = {
+        name = "Void Colossus",
+        hp = 500,
+        speed = 30,
+        reward = 100,
+        sendCost = 0,         -- Bosses can't be sent
+        size = 28,
+        color = {0.7, 0.1, 0.9},
+        isBoss = true,
+    },
+    redBoss = {
+        name = "Crimson Void",
+        hp = 600,
+        speed = 35,
+        reward = 150,
+        sendCost = 0,
+        size = 30,
+        color = {0.9, 0.15, 0.1},
+        isBoss = true,
+        isRedBoss = true,
     },
 }
 
 -- Visual configuration for void spawn rendering (pixel art style)
 Config.VOID_SPAWN = {
     pixelSize = 3,            -- Size of each "pixel" in the sprite
+    coreSize = 5,             -- Pitch black center region size (in pixels)
     distortionAmount = 0.25,
     distortionFrequency = 2.0,
     distortionSpeed = 1.5,
     octaves = 3,
     seed = 0,
-    swirlSpeed = 1.2,
+    swirlSpeed = 0.8,         -- Slower, more ominous (matching portals)
     glowWidth = 0.3,
-    pulseSpeed = 2.5,
+    pulseSpeed = 2.0,         -- Matching portals
     pulseAmount = 0.15,
     -- Edge wobble animation
-    wobbleSpeed = 3.0,        -- How fast edges undulate
+    wobbleSpeed = 2.5,        -- Matching portals
     wobbleFrequency = 3.0,    -- Angular frequency (more = more bumps)
-    wobbleAmount = 1.5,       -- Displacement in pixels (relative to pixelSize)
+    wobbleAmount = 1.2,       -- Matching portals
     wobbleFalloff = 0.4,      -- Inner radius where wobble starts (0-1)
-    sparkleThreshold = 0.92,  -- Lower = more sparkles (was 0.96)
+    sparkleThreshold = 0.96,  -- Rare sparkles (matching portals)
     colors = {
-        core = {0.08, 0.03, 0.15},       -- Brighter purple-black
-        mid = {0.25, 0.10, 0.40},        -- Brighter mid purple
+        core = {0.01, 0.005, 0.02},      -- Near-black void (matching portals)
+        mid = {0.06, 0.03, 0.10},        -- Dark purple interior (matching portals)
         edgeGlow = {0.85, 0.50, 1.0},    -- Bright pink-purple edge
-        sparkle = {1.0, 0.9, 1.0},       -- Nearly white sparkles
+        sparkle = {0.9, 0.8, 1.0},       -- Subtle sparkles (matching portals)
     },
 }
 
@@ -304,15 +346,16 @@ Config.VOID_SPAWN = {
 --                                                / | \
 Config.VOID_SPIDER = {
     pixelSize = 3,              -- Match standard creep pixel size
+    coreSize = 4,               -- Pitch black center region size (in pixels)
     distortionFrequency = 2.0,
     octaves = 3,
-    wobbleSpeed = 3.0,
+    wobbleSpeed = 2.5,          -- Matching portals
     wobbleFrequency = 3.0,
     wobbleAmount = 0.4,
     wobbleFalloff = 0.4,
-    swirlSpeed = 1.2,
-    pulseSpeed = 2.5,
-    sparkleThreshold = 0.92,
+    swirlSpeed = 0.8,           -- Matching portals
+    pulseSpeed = 2.0,           -- Matching portals
+    sparkleThreshold = 0.96,    -- Rare sparkles (matching portals)
     -- Base leg settings (medium legs - fixed)
     legs = {
         length = 1.5,           -- Medium length
@@ -322,12 +365,12 @@ Config.VOID_SPIDER = {
         gap = 1.4,              -- Gap from body center
         angle = 0.2,            -- Slight outward angle (~11 degrees)
     },
-    -- Colors (same as standard void spawn)
+    -- Colors (pitch black matching portals)
     colors = {
-        core = {0.08, 0.03, 0.15},
-        mid = {0.25, 0.10, 0.40},
-        edgeGlow = {0.85, 0.50, 1.0},
-        sparkle = {1.0, 0.9, 1.0},
+        core = {0.01, 0.005, 0.02},      -- Near-black void
+        mid = {0.06, 0.03, 0.10},        -- Dark purple interior
+        edgeGlow = {0.85, 0.50, 1.0},    -- Bright pink-purple edge
+        sparkle = {0.9, 0.8, 1.0},       -- Subtle sparkles
     },
     -- Body shape (gash variant - wider elongated rift)
     body = {
@@ -336,35 +379,91 @@ Config.VOID_SPIDER = {
     },
 }
 
+-- Visual configuration for void boss rendering (larger, more imposing)
+Config.VOID_BOSS = {
+    pixelSize = 4,
+    coreSize = 10,
+    distortionFrequency = 1.5,
+    octaves = 4,
+    wobbleSpeed = 1.5,
+    wobbleFrequency = 2.0,
+    wobbleAmount = 1.5,
+    wobbleFalloff = 0.3,
+    swirlSpeed = 0.5,
+    pulseSpeed = 1.5,
+    sparkleThreshold = 0.94,
+    colors = {
+        core = {0.005, 0.002, 0.01},
+        mid = {0.04, 0.02, 0.08},
+        edgeGlow = {0.95, 0.40, 1.0},
+        sparkle = {1.0, 0.9, 1.0},
+    },
+}
+
+-- Visual configuration for red boss rendering (crimson void terror)
+Config.RED_BOSS = {
+    pixelSize = 4,
+    coreSize = 10,
+    distortionFrequency = 1.5,
+    octaves = 4,
+    wobbleSpeed = 1.8,
+    wobbleFrequency = 2.0,
+    wobbleAmount = 1.3,
+    wobbleFalloff = 0.3,
+    swirlSpeed = 0.6,
+    pulseSpeed = 2.0,
+    sparkleThreshold = 0.92,
+    colors = {
+        core = {0.15, 0.02, 0.02},
+        mid = {0.35, 0.06, 0.06},
+        edgeGlow = {1.0, 0.25, 0.15},
+        sparkle = {1.0, 0.9, 0.7},
+    },
+}
+
 -- Visual configuration for the Void Portal (circular, creep-style rendering)
 Config.VOID_PORTAL = {
     baseSize = 42,              -- 3x creep size (14 * 3)
     maxSize = 120,              -- Maximum growth (fills spawn area)
     topPadding = 20,            -- Padding from top of spawn area
-    pixelSize = 3,              -- Same as creep
-    distortionFrequency = 2.0,  -- Same as creep
-    octaves = 3,                -- Same as creep
-    wobbleSpeed = 3.0,          -- Same as creep
-    wobbleFrequency = 3.0,      -- Same as creep
-    wobbleAmount = 1.5,         -- Same as creep
-    wobbleFalloff = 0.4,        -- Same as creep
-    swirlSpeed = 1.2,           -- Same as creep
-    pulseSpeed = 2.5,           -- Same as creep
-    sparkleThreshold = 0.92,    -- Same as creep
-    colors = {                  -- Same brighter colors as creep
-        core = {0.08, 0.03, 0.15},       -- Brighter purple-black
-        mid = {0.25, 0.10, 0.40},        -- Brighter mid purple
+    pixelSize = 3,              -- Same as exit portal
+    coreSize = 12,              -- Dark squared center size (in pixels)
+    distortionFrequency = 2.0,  -- Same as exit portal
+    octaves = 3,                -- Same as exit portal
+    wobbleSpeed = 2.5,          -- Same as exit portal
+    wobbleFrequency = 3.0,      -- Same as exit portal
+    wobbleAmount = 1.2,         -- Same as exit portal
+    wobbleFalloff = 0.4,        -- Same as exit portal
+    swirlSpeed = 0.8,           -- Same as exit portal
+    pulseSpeed = 2.0,           -- Same as exit portal
+    sparkleThreshold = 0.96,    -- Same as exit portal (rare sparkles)
+    colors = {                  -- Dark void colors (matching exit portal)
+        core = {0.01, 0.005, 0.02},      -- Near-black void
+        mid = {0.06, 0.03, 0.10},        -- Dark purple interior
         edgeGlow = {0.85, 0.50, 1.0},    -- Bright pink-purple edge
-        sparkle = {1.0, 0.9, 1.0},       -- Nearly white sparkles
+        sparkle = {0.9, 0.8, 1.0},       -- Subtle sparkles
     },
-    growthPerDamage = 0.3,      -- Size increase per damage point
-    growthSpeed = 15,           -- Animated growth rate (pixels/sec)
-    -- Shadow settings
+    -- Shadow ellipse settings
     shadow = {
-        offsetY = 1.4,          -- Shadow Y offset as multiplier of size (towards bottom of void)
-        width = 1.6,            -- Shadow width as multiplier of size
-        height = 0.4,           -- Shadow height as multiplier of size
-        alpha = 0.25,           -- Shadow opacity
+        offsetY = 10,           -- Offset below portal bottom edge
+        width = 0.9,            -- Shadow width as multiplier of radius (0.9 perspective)
+        height = 0.25,          -- Shadow height (flattened horizontal ellipse)
+        alpha = 0.4,            -- Shadow opacity
+        color = {0, 0, 0},      -- Shadow color (black)
+    },
+    -- Outward spewing particles
+    spewParticles = {
+        count = 25,                       -- Active particles
+        coreRadius = 0.3,                 -- Spawn from inner 30% of portal
+        maxRadius = 1.8,                  -- Despawn at 1.8x portal radius
+        speed = 35,                       -- Outward movement speed
+        size = 3,                         -- Match pixel size
+        color = {0.75, 0.45, 0.95},       -- Light purple (matching edge glow)
+    },
+    -- Bloom/glow settings (reduced compared to player portal)
+    bloom = {
+        intensity = 0.6,                  -- Lower bloom intensity
+        radiusMult = 0.7,                 -- Smaller glow radius
     },
 }
 
@@ -376,6 +475,13 @@ Config.WAVE_DURATION = 5       -- Seconds between waves
 Config.WAVE_BASE_ENEMIES = 3   -- Starting enemies per wave
 Config.WAVE_SCALING = 1        -- Additional enemies per wave
 Config.WAVE_SPAWN_INTERVAL = 0.5  -- Time between spawning each creep
+Config.WAVE_HEALTH_SCALING = 0.03  -- HP increase per wave (3% more HP each wave)
+
+-- Wave progression (level structure)
+Config.WAVE_PROGRESSION = {
+    totalWaves = 20,
+    bossWaves = {10, 20},
+}
 
 -- Wave composition based on anger level (replaces old send ratios)
 Config.WAVE_ANGER_COMPOSITION = {
@@ -390,16 +496,147 @@ Config.WAVE_ANGER_COMPOSITION = {
 -- =============================================================================
 
 Config.VOID = {
-    maxHealth = 100,
-    clickDamage = 1,
+    maxClicks = 100,
     baseIncomePerClick = 5,
-    angerThresholds = {75, 50, 25},  -- Health thresholds that increase anger
-    maxAnger = 4,                     -- Maximum anger level (0-3 + permanent)
+    angerThresholds = {25, 50, 75, 100},  -- Click counts for tiers 1-4
+    tierHpBonus = 0.10,      -- +10% HP per tier
+    tierSpeedBonus = 0.10,   -- +10% speed per tier
     baseRadius = 60,
-    yOffset = 30,                     -- Distance from top of play area
-    pulseSpeed = 2,                   -- Pulse animation speed
-    pulseAmount = 0.1,                -- Pulse size variation (10%)
-    clickFlashDuration = 0.15,        -- Flash duration on click
+    yOffset = 30,
+    clickFlashDuration = 0.15,
+    thresholdPulse = {
+        duration = 0.5,
+        scaleAmount = 0.15,
+        speed = 8,
+    },
+}
+
+-- Void Shards (meta-currency earned from killing enemies)
+Config.VOID_SHARDS = {
+    levelReward = 10,   -- Shards earned for completing a level
+    bossBonus = 5,      -- Bonus shards for killing a boss
+    dropChance = 0.10,  -- 10% chance to drop a shard on any kill
+    dropAmount = 1,     -- Amount of shards dropped
+}
+
+-- Void Crystals (rare currency from boss kills for keystones)
+Config.VOID_CRYSTALS = {
+    -- Boss wave -> crystal reward
+    bossRewards = {
+        [10] = 1,   -- Wave 10 boss gives 1 crystal
+        [20] = 2,   -- Wave 20 boss gives 2 crystals
+    },
+}
+
+-- =============================================================================
+-- SKILL TREE
+-- =============================================================================
+
+Config.SKILL_TREE = {
+    -- Full screen layout (centered on play area, not panel)
+    centerX = 640,  -- Screen center X
+    centerY = 460,  -- Screen center Y
+
+    -- Tower circle (5 towers arranged in circle at center)
+    towerCircleRadius = 145,  -- Was 90 (+55)
+
+    -- Background (Voronoi ground texture, same style as game)
+    background = {
+        worldRadius = 1200,          -- World units from center (must cover screen + pan margin)
+        pixelSize = 4,
+        perspectiveYRatio = 0.9,     -- Less squash than game (0.5) - tilted ground look
+        cellSize = 9,
+        fissureThreshold = 0.16,
+        mossIntensity = 1.2,
+        -- Reuse game background colors (set in init after Config.BACKGROUND is defined)
+    },
+
+    -- Camera bounds (how far player can pan from center)
+    -- Max = worldRadius - halfScreenSize (1200 - 640 = 560 for X)
+    cameraBounds = {
+        maxPanX = 450,               -- Max pan distance from center horizontally
+        maxPanY = 450,               -- Max pan distance from center vertically
+    },
+
+    -- Paths (simple pixelated lines with shy glow)
+    carvedPaths = {
+        colors = {
+            dormant = {0.04, 0.03, 0.05},     -- Very dim, blends with ground
+            active = {0.5, 0.3, 0.7},         -- Soft purple glow
+        },
+        glowPulseSpeed = 1.5,
+    },
+
+    -- Node tiers (distance from center, accounting for tower circle)
+    tierRadius = {
+        [0] = 0,
+        [1] = 280,   -- First tier of nodes (tower circle at 145, gap of 135)
+        [2] = 380,   -- Second tier
+        [3] = 480,   -- Third tier
+        [4] = 580,   -- Fourth tier
+        [5] = 680,   -- Keystones
+    },
+    nodeSize = 24,
+    keystoneSize = 32,
+
+    -- Cross-branch connections (nodes between branches forming a ring)
+    crossBranch = {
+        radius = 430,   -- Between tier 2 (380) and tier 3 (480)
+        nodeSize = 20,  -- Slightly smaller than regular nodes
+        -- Angles halfway between adjacent branches
+        -- Each connects two adjacent tower types
+        connections = {
+            { id = "cross_bolt_orb", branches = {"void_bolt", "void_orb"} },
+            { id = "cross_orb_ring", branches = {"void_orb", "void_ring"} },
+            { id = "cross_ring_eye", branches = {"void_ring", "void_eye"} },
+            { id = "cross_eye_star", branches = {"void_eye", "void_star"} },
+            { id = "cross_star_bolt", branches = {"void_star", "void_bolt"} },
+        },
+        cost = 15,  -- Shards cost for cross-branch nodes
+    },
+
+    -- Branch angles (radians, starting from top, 72° apart)
+    branchAngles = {
+        void_bolt = -math.pi / 2,                    -- Top (lightning)
+        void_orb = -math.pi / 2 + math.pi * 2 / 5,   -- Upper right (poison)
+        void_ring = -math.pi / 2 + math.pi * 4 / 5,  -- Lower right (control)
+        void_eye = -math.pi / 2 + math.pi * 6 / 5,   -- Lower left (gravity)
+        void_star = -math.pi / 2 + math.pi * 8 / 5,  -- Upper left (fire)
+    },
+
+    -- Tower type to variant index mapping (for TurretConcepts rendering)
+    towerVariants = {
+        void_orb = 1,
+        void_ring = 2,
+        void_bolt = 3,
+        void_eye = 4,
+        void_star = 5,
+    },
+
+    -- Costs (in shards for regular nodes, crystals for keystones)
+    nodeCosts = {
+        [1] = 5,    -- Tier 1 cost
+        [2] = 10,   -- Tier 2 cost
+        [3] = 20,   -- Tier 3 cost
+        [4] = 35,   -- Tier 4 cost
+        keystone = 1,  -- crystals
+    },
+
+    -- Colors
+    colors = {
+        locked = {0.3, 0.3, 0.3},
+        available = {0.5, 0.4, 0.6},
+        allocated = {0.8, 0.6, 1.0},
+        keystone = {0.4, 0.85, 1.0},
+        keystoneAllocated = {0.2, 0.95, 0.8},
+        connection = {0.4, 0.3, 0.5, 0.5},
+        connectionActive = {0.7, 0.5, 0.9, 0.8},
+    },
+
+    -- UI (full scene mode)
+    startButtonY = 850,
+    startButtonWidth = 200,
+    startButtonHeight = 50,
 }
 
 -- =============================================================================
@@ -417,6 +654,8 @@ Config.FLOATING_NUMBERS = {
     -- Colors
     damageColor = {1.0, 1.0, 1.0},      -- White for damage
     goldColor = {0.95, 0.78, 0.25},     -- Gold for rewards
+    shardColor = {0.65, 0.45, 0.95},    -- Purple for void shards
+    crystalColor = {0.4, 0.85, 1.0},    -- Cyan for void crystals
 
     -- Spread/variation
     spreadX = 20,             -- Random horizontal spread
@@ -493,7 +732,6 @@ Config.COLORS = {
 
     -- Functional
     towerBase = {0.2, 0.2, 0.22},
-    income = {0.25, 0.60, 0.35},               -- Muted emerald
     lives = {0.75, 0.25, 0.30},                -- Ruby
 
     -- Base zone (player camp)
@@ -518,6 +756,12 @@ Config.COLORS = {
     voidHealthBarBg = {0.2, 0.1, 0.2},
     angerPipEmpty = {0.3, 0.15, 0.3},
     angerPipFilled = {1.0, 0.3, 0.1},
+
+    -- Wave progress bar
+    progressBar = {0.45, 0.30, 0.60},
+    progressBarBg = {0.08, 0.06, 0.10},
+    bossMarker = {0.95, 0.35, 0.25},
+    voidShard = {0.65, 0.45, 0.95},
 }
 
 -- =============================================================================
@@ -532,11 +776,26 @@ Config.UI = {
     -- Layout constants for panel sections
     LAYOUT = {
         sectionSpacing = 10,
-        statsHeight = 85,     -- More space for stats + void bar
+        statsHeight = 55,     -- Reduced: no void bar (gold, lives, wave, speed only)
         voidHeight = 0,       -- Merged into stats section
         sectionTitleHeight = 0,  -- No section headers
         borderDecorStart = 8,
         borderDecorSpacing = 24,
+        progressHeight = 90,  -- Wave progress bar + anger meter section
+    },
+    -- Anger meter UI config
+    angerMeter = {
+        height = 16,
+        thresholdMarkerWidth = 2,
+        colors = {
+            background = {0.08, 0.04, 0.10},
+            fill = {0.8, 0.2, 0.5},
+            fillTier2 = {0.9, 0.3, 0.4},
+            fillTier3 = {1.0, 0.2, 0.2},
+            fillTier4 = {1.0, 0.1, 0.1},
+            thresholdMarker = {0.6, 0.3, 0.7},
+            border = {0.4, 0.2, 0.5},
+        },
     },
     -- Panel visual settings
     panel = {
@@ -717,8 +976,8 @@ Config.SETTINGS = {
     },
     -- Visual effects defaults
     visualEffects = {
-        lighting = false,      -- Dynamic lighting system
-        vignette = true,       -- Edge darkening effect
+        bloom = true,          -- Post-processing bloom effect
+        vignette = false,      -- Edge darkening effect
         fogParticles = true,   -- Atmospheric fog wisps
         dustParticles = true,  -- Floating dust motes
     },
@@ -728,8 +987,8 @@ Config.SETTINGS = {
 -- GAME SPEED
 -- =============================================================================
 
-Config.GAME_SPEEDS = {1, 5, 0}              -- x1, x5, paused
-Config.GAME_SPEED_LABELS = {"x1", "x5", "||"}  -- Display labels
+Config.GAME_SPEEDS = {1, 5, 50, 0}              -- x1, x5, x50, paused
+Config.GAME_SPEED_LABELS = {"x1", "x5", "x50", "||"}  -- Display labels
 
 -- =============================================================================
 -- FONTS
@@ -742,6 +1001,7 @@ Config.FONTS = {
         medium = 24,
         large = 32,
         title = 48,
+        floatingNumber = 34,  -- 1.4x the previous medium (24)
     },
 }
 
@@ -751,13 +1011,19 @@ Config.FONTS = {
 
 Config.BACKGROUND = {
     pixelSize = 4,
+    perspectiveYRatio = 0.5,  -- Vertical compression for top-down perspective (1.0 = none)
+
+    -- Corrupted Grove style - mossy plates with dark crevices
+    cellSize = 9,
+    fissureThreshold = 0.16,
+    mossIntensity = 1.4,
     colors = {
-        base = {0.07, 0.06, 0.08},
-        baseDark = {0.04, 0.035, 0.05},
-        baseLight = {0.10, 0.09, 0.11},
-        crack = {0.03, 0.025, 0.04},
-        cluster = {0.14, 0.08, 0.20},
-        clusterBright = {0.22, 0.12, 0.30},
+        base = {0.06, 0.055, 0.07},
+        plateVariation = 0.02,
+        fissure = {0.025, 0.035, 0.025},
+        moss = {0.04, 0.07, 0.03},
+        mossLight = {0.06, 0.10, 0.045},
+        glowFalloff = 0.12,
     },
 }
 
@@ -791,6 +1057,55 @@ Config.EXIT_PORTAL = {
         width = 1.6,            -- Shadow width as multiplier of size
         height = 0.4,           -- Shadow height as multiplier of size
         alpha = 0.25,           -- Shadow opacity
+    },
+}
+
+-- =============================================================================
+-- VOID CORE (Organic procedural black hole - player base)
+-- =============================================================================
+
+Config.VOID_CORE = {
+    -- Pixel rendering (match existing style)
+    pixelSize = 3,
+
+    -- Size
+    baseSize = 38,                    -- Organic boundary radius
+    coreSize = 10,                    -- Dark squared center size (in pixels, not grid)
+
+    -- Organic boundary animation (same as Void entity)
+    distortionFrequency = 2.0,
+    octaves = 3,
+    wobbleSpeed = 2.5,                -- Slightly slower than void
+    wobbleFrequency = 3.0,
+    wobbleAmount = 1.2,               -- Less extreme than creeps
+    wobbleFalloff = 0.4,
+    swirlSpeed = 0.8,                 -- Slower, more ominous
+    pulseSpeed = 2.0,
+
+    -- Colors (dark void with purple edge)
+    colors = {
+        core = {0.01, 0.005, 0.02},       -- Near-black void
+        mid = {0.06, 0.03, 0.10},         -- Dark purple interior
+        edgeGlow = {0.6, 0.35, 0.85},     -- Purple edge glow
+        sparkle = {0.9, 0.8, 1.0},        -- Subtle sparkles
+    },
+    sparkleThreshold = 0.96,              -- Rare sparkles
+
+    -- Gravity particles (intense suction effect)
+    particles = {
+        count = 40,                       -- More particles for denser effect
+        spawnRadius = 1.6,                -- Spawn further out for more visible trails
+        pullSpeed = 65,                   -- Faster inward pull
+        size = 3,                         -- Match pixel size
+        color = {0.85, 0.65, 1.0},        -- Brighter purple-pink
+    },
+
+    -- Shadow
+    shadow = {
+        offsetY = 1.2,
+        width = 1.3,
+        height = 0.35,
+        alpha = 0.3,
     },
 }
 
@@ -1207,82 +1522,77 @@ Config.SHOWCASE = {
 }
 
 -- =============================================================================
--- LIGHTING
+-- POST-PROCESSING & BLOOM
 -- =============================================================================
 
-Config.LIGHTING = {
-    -- PERFORMANCE: Lighting quality setting
-    -- "high" = 5 circles per light (original), "medium" = 3 circles, "low" = 2 circles
-    quality = "medium",
+Config.POST_PROCESSING = {
+    enabled = true,
 
-    -- PERFORMANCE: Frame throttling - update lighting every N frames
-    -- 1 = every frame (60 FPS lighting), 2 = every other frame (30 FPS lighting)
-    updateEveryNFrames = 2,
-
-    -- Ambient light (base brightness before lights are added)
-    ambient = {0.55, 0.50, 0.60},  -- Brighter ambient (was 0.45, 0.40, 0.50)
-
-    -- Light radii (pixels) - larger for diffuse feel
-    radii = {
-        tower = {
-            void_orb = 130,
-            void_ring = 150,
-            void_bolt = 140,
-            void_eye = 200,
-            void_star = 170,
-        },
-        creep = 100,          -- Larger creep glow (was 70)
-        projectile = 60,
-        void = 700,           -- HUGE void light radius
+    bloom = {
+        enabled = true,
+        intensity = 0.4,      -- Overall bloom brightness (subtle)
+        radius = 6,           -- Blur kernel size
+        passes = 2,           -- Number of blur passes
     },
 
-    -- Light colors (saturated for visibility, element-themed)
+    -- Per-entity glow settings (intensity and radius multipliers)
+    glow = {
+        void = {
+            intensity = 0.4,      -- Subtle void glow
+            radius_mult = 1.0,
+            pulse_speed = 2.0,
+        },
+        creep = {
+            intensity = 0.25,     -- Subtle creep glow
+            radius_mult = 0.8,
+            pulse_speed = 3.0,
+        },
+        tower = {
+            intensity = 0.2,      -- Subtle tower glow
+            radius_mult = 0.6,
+        },
+        projectile = {
+            intensity = 0.3,      -- Subtle projectile glow
+            radius_mult = 0.8,
+        },
+        ground_effect = {
+            intensity = 0.25,
+            radius_mult = 0.8,
+        },
+    },
+
+    -- Glow colors per tower type (element-themed, saturated)
     colors = {
         tower = {
-            void_orb = {0.5, 0.95, 0.4},    -- Poison (green)
-            void_ring = {0.5, 0.85, 1.0},   -- Ice (cyan)
-            void_bolt = {0.4, 0.7, 1.0},    -- Electric (blue)
-            void_eye = {0.75, 0.45, 0.95},  -- Shadow (purple)
-            void_star = {1.0, 0.65, 0.3},   -- Fire (orange)
+            void_orb = {0.3, 1.0, 0.2},     -- Poison (bright green)
+            void_ring = {0.3, 0.9, 1.0},    -- Ice (bright cyan)
+            void_bolt = {0.2, 0.5, 1.0},    -- Electric (bright blue)
+            void_eye = {0.8, 0.3, 1.0},     -- Shadow (bright purple)
+            void_star = {1.0, 0.4, 0.1},    -- Fire (bright orange)
         },
-        creep = {0.9, 0.45, 1.0},   -- Even brighter purple
+        creep = {0.9, 0.2, 1.0},            -- Bright purple/magenta
         projectile = {
-            void_orb = {0.6, 1.0, 0.5},     -- Poison (green)
-            void_ring = {0.6, 0.9, 1.0},    -- Ice (cyan)
-            void_bolt = {0.5, 0.75, 1.0},   -- Electric (blue)
-            void_eye = {0.85, 0.60, 1.0},   -- Shadow (purple)
-            void_star = {1.0, 0.75, 0.4},   -- Fire (orange)
+            void_orb = {0.4, 1.0, 0.3},     -- Poison (green)
+            void_ring = {0.4, 1.0, 1.0},    -- Ice (cyan)
+            void_bolt = {0.3, 0.6, 1.0},    -- Electric (blue)
+            void_eye = {0.9, 0.4, 1.0},     -- Shadow (purple)
+            void_star = {1.0, 0.5, 0.1},    -- Fire (orange)
         },
-        -- Void light colors indexed by anger level - BRIGHT and saturated
+        -- Void portal colors indexed by anger level
         void = {
-            [0] = {0.8, 0.4, 1.0},    -- Bright purple (calm)
-            [1] = {1.0, 0.4, 0.9},    -- Bright magenta (annoyed)
-            [2] = {1.0, 0.3, 0.6},    -- Bright red-purple (angry)
-            [3] = {1.0, 0.2, 0.3},    -- Bright red (furious)
+            [0] = {0.8, 0.2, 1.0},    -- Bright purple (calm)
+            [1] = {1.0, 0.2, 0.9},    -- Bright magenta (annoyed)
+            [2] = {1.0, 0.15, 0.5},   -- Bright red-purple (angry)
+            [3] = {1.0, 0.1, 0.15},   -- Bright red (furious)
         },
     },
 
-    -- Intensities - creeps much brighter
-    intensities = {
-        tower = {
-            void_orb = 1.0,
-            void_ring = 1.1,
-            void_bolt = 1.2,
-            void_eye = 1.0,
-            void_star = 1.3,
-        },
-        creep = 2.5,          -- Much more intense creep glow (was 1.5)
-        projectile = 1.3,
-        void = {
-            min = 2.0,        -- STRONG minimum pulsing intensity
-            max = 3.5,        -- STRONG maximum pulsing intensity
-        },
-    },
-
-    -- Self-illumination boost (multiplier for sprite brightness when lighting is on)
-    selfIllumination = {
-        creep = 1.35,         -- Boost creep brightness
-        void = 1.4,           -- Boost void brightness
+    -- Glow radii in pixels (larger = more visible bloom spread)
+    radii = {
+        tower = 150,
+        creep = 100,
+        projectile = 60,
+        void = 300,
     },
 }
 
