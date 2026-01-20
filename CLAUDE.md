@@ -61,10 +61,12 @@ Send monsters to the Void to increase your passive income — but those same mon
 
 ### Towers
 
-3 tower types with distinct roles (see `src/config.lua` for stats):
-- **Wall** — Blocks paths, cannot attack
-- **Turret (basic)** — Balanced DPS, fast rotation tracking
-- **Sniper** — Single Target (high damage, slow fire, slow rotation)
+5 tower types with distinct roles (see `src/config.lua` for stats):
+- **Void Orb** — Starter tower: cheap, fast, short range
+- **Void Ring** — Area specialist: slow but hits all enemies in range
+- **Void Bolt** — Chain lightning: hits multiple targets
+- **Void Eye** — Sniper: long range, high damage, single target
+- **Void Star** — Fire tower: burning damage over time
 
 ### Enemies (Creeps)
 
@@ -628,9 +630,11 @@ Press `~` (backtick/tilde) in-game to see all keyboard shortcuts.
 
 | Key | Action |
 |-----|--------|
-| `1` | Select Wall tower |
-| `2` | Select Turret tower |
-| `3` | Select Sniper tower |
+| `1` | Select Void Orb tower |
+| `2` | Select Void Ring tower |
+| `3` | Select Void Bolt tower |
+| `4` | Select Void Eye tower |
+| `5` | Select Void Star tower |
 | `Q` | Buy Auto-Clicker upgrade |
 | `S` | Cycle game speed |
 | `P` | Open settings menu |

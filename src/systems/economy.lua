@@ -22,7 +22,7 @@ function Economy.init()
     state.income = Config.BASE_INCOME
     state.lives = Config.STARTING_LIVES
     state.incomeTimer = 0
-    state.sent = { voidSpawn = 0 }
+    state.sent = { voidSpawn = 0, voidSpider = 0 }
 end
 
 function Economy.update(dt)
@@ -83,7 +83,9 @@ function Economy.sendCreep(creepType)
 
     Economy.spendGold(creepConfig.sendCost)
     state.income = state.income + creepConfig.income
-    state.sent[creepType] = state.sent[creepType] + 1
+
+    -- Initialize send counter if not present
+    state.sent[creepType] = (state.sent[creepType] or 0) + 1
 
     EventBus.emit("creep_sent", {
         type = creepType,

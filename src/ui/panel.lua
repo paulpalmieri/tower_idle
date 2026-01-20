@@ -44,8 +44,8 @@ local state = {
 }
 
 -- Tower types in order
-local TOWER_ORDER = {"wall", "void_orb", "void_ring", "void_bolt", "void_eye", "void_star"}
-local TOWER_KEYS = {"1", "2", "3", "4", "5", "6"}
+local TOWER_ORDER = {"void_orb", "void_ring", "void_bolt", "void_eye", "void_star"}
+local TOWER_KEYS = {"1", "2", "3", "4", "5"}
 
 -- Upgrade types in order
 local UPGRADE_ORDER = {"autoClicker"}
@@ -297,7 +297,7 @@ local function _drawTowerThumbnail(towerType, x, y, canAfford)
         end
         TurretConcepts.drawThumbnail(towerConfig.voidVariant, x, y, 1.5)
     elseif artConfig and artConfig.base then
-        -- Use pixel art for wall and other towers with sprites
+        -- Use pixel art for towers with sprites
         if not canAfford then
             love.graphics.setColor(0.4, 0.4, 0.4)
         else

@@ -46,17 +46,6 @@ Config.MAX_OFFLINE_HOURS = 4
 -- =============================================================================
 
 Config.TOWERS = {
-    wall = {
-        name = "Wall",
-        cost = 1,
-        damage = 0,
-        fireRate = 0,
-        range = 0,
-        projectileSpeed = 0,
-        color = {0.5, 0.5, 0.5},
-        description = "Blocks paths. Cannot attack.",
-        voidVariant = nil,  -- Wall uses pixel art, not void entity
-    },
     void_orb = {
         name = "Void Orb",
         cost = 75,
@@ -123,13 +112,22 @@ Config.TOWERS = {
 Config.TOWER_SIZE = 16         -- Base radius
 Config.TOWER_BARREL_LENGTH = 1.2  -- Multiplier of size
 
+-- Tower building animation
+Config.TOWER_BUILD = {
+    duration = 5.0,           -- Total build time in seconds
+    basePhaseDuration = 0.8,  -- Time before void entity starts appearing
+}
+
 -- =============================================================================
 -- TOWER ATTACK TYPES (Unique attack mechanics per tower)
 -- =============================================================================
 
 Config.TOWER_ATTACKS = {
     void_orb = {
-        type = "projectile_cloud",      -- Projectile spawns poison cloud on hit
+        type = "drip",                  -- Glow + drip effect, pool spawns at enemy
+        glowDuration = 0.2,             -- Tower glow buildup time
+        dripDuration = 0.3,             -- Visual drip travel time
+        dripSegments = 4,               -- Drip trail segments
         cloudRadius = 40,               -- Radius of poison cloud
         cloudDuration = 4.0,            -- How long cloud lasts
         cloudDamagePerTick = 3,         -- Damage per tick
@@ -141,20 +139,32 @@ Config.TOWER_ATTACKS = {
         slowDuration = 0.2,             -- How long slow lasts after leaving aura
     },
     void_bolt = {
-        type = "projectile_chain",      -- Projectile chains to nearby enemies
-        maxChains = 3,                  -- Number of chain jumps
-        chainRange = 80,                -- Max distance to chain target
-        chainDamageMultiplier = 0.6,    -- Damage multiplier per jump
-        chainDelay = 0.05,              -- Delay between chain jumps
+        type = "piercing_bolt",         -- Fast piercing bolt
+        boltSpeed = 1000,               -- Bolt travel speed
+        pierceDamageMultiplier = 0.85,  -- Damage multiplier per pierce
+        slowMultiplier = 0.7,           -- Slight slow on hit
+        slowDuration = 0.5,             -- Brief slow duration
     },
     void_eye = {
-        type = "beam",                  -- Charge-up laser sight, instant beam
-        chargeTime = 1.5,               -- Time to charge before firing
-        beamDuration = 0.1,             -- Visual duration of beam
+        type = "blackhole",             -- Charge + spawn blackhole that pulls enemies
+        chargeTime = 0.8,               -- Time to charge before spawning
+        blackholeDuration = 4.5,        -- How long blackhole lasts
+        blackholeRadius = 80,           -- Pull effect radius
+        blackholePullStrength = 60,     -- Base pull speed
+        blackholePullFalloff = 1.5,     -- Pull strength falloff exponent
+        blackholeVisualSize = 12,       -- Visual size of event horizon (pixels)
     },
     void_star = {
-        type = "projectile_fire",       -- Projectile spawns burning ground on hit
-        fireRadius = 35,                -- Radius of fire zone
+        type = "lobbed",                -- Parabolic arc bomb with explosion burst
+        arcHeightBase = 30,             -- Base arc height
+        arcHeightPerDistance = 0.2,     -- Arc height scale per distance
+        maxArcHeight = 80,              -- Maximum arc height cap
+        lobSpeed = 400,                 -- Slower lobbed projectile speed
+        spinSpeed = 6,                  -- Rotation speed during flight (radians/sec)
+        explosionParticles = 8,         -- Explosion burst particle count
+        explosionSpeed = 80,            -- Explosion particle speed
+        explosionDuration = 0.25,       -- Explosion visual duration
+        fireRadius = 35,                -- Radius of fire zone after explosion
         fireDuration = 3.0,             -- How long fire lasts
         fireDamagePerTick = 4,          -- Damage per tick
         fireTickInterval = 0.4,         -- Time between damage ticks
@@ -190,6 +200,7 @@ Config.STATUS_EFFECTS = {
 -- =============================================================================
 
 Config.GROUND_EFFECTS = {
+    perspectiveYScale = 0.9,  -- Y compression for ground effects (0.9 = 10% compression for subtle depth)
     poison_cloud = {
         pixelSize = 4,
         wobbleSpeed = 2.0,
@@ -250,6 +261,16 @@ Config.CREEPS = {
         size = 14,
         color = {0.5, 0.2, 0.7},
     },
+    voidSpider = {
+        name = "Void Spider",
+        hp = 25,              -- Fragile (lower than voidSpawn)
+        speed = 70,           -- Fast (higher than voidSpawn)
+        reward = 4,           -- Lower reward
+        income = 6,           -- Lower income
+        sendCost = 60,        -- Cheaper to send
+        size = 12,            -- Slightly smaller body
+        color = {0.6, 0.2, 0.8},
+    },
 }
 
 -- Visual configuration for void spawn rendering (pixel art style)
@@ -275,6 +296,43 @@ Config.VOID_SPAWN = {
         mid = {0.25, 0.10, 0.40},        -- Brighter mid purple
         edgeGlow = {0.85, 0.50, 1.0},    -- Bright pink-purple edge
         sparkle = {1.0, 0.9, 1.0},       -- Nearly white sparkles
+    },
+}
+
+-- Visual configuration for void spider rendering (pixel art style)
+-- Elongated rift body with floating shard legs:  / | \
+--                                                / | \
+Config.VOID_SPIDER = {
+    pixelSize = 3,              -- Match standard creep pixel size
+    distortionFrequency = 2.0,
+    octaves = 3,
+    wobbleSpeed = 3.0,
+    wobbleFrequency = 3.0,
+    wobbleAmount = 0.4,
+    wobbleFalloff = 0.4,
+    swirlSpeed = 1.2,
+    pulseSpeed = 2.5,
+    sparkleThreshold = 0.92,
+    -- Base leg settings (medium legs - fixed)
+    legs = {
+        length = 1.5,           -- Medium length
+        width = 0.6,            -- Medium width
+        bobAmount = 2,          -- Vertical bob in pixels
+        bobSpeed = 3,           -- Slow bob
+        gap = 1.4,              -- Gap from body center
+        angle = 0.2,            -- Slight outward angle (~11 degrees)
+    },
+    -- Colors (same as standard void spawn)
+    colors = {
+        core = {0.08, 0.03, 0.15},
+        mid = {0.25, 0.10, 0.40},
+        edgeGlow = {0.85, 0.50, 1.0},
+        sparkle = {1.0, 0.9, 1.0},
+    },
+    -- Body shape (gash variant - wider elongated rift)
+    body = {
+        width = 0.6,
+        height = 1.6,
     },
 }
 
@@ -321,10 +379,10 @@ Config.WAVE_SPAWN_INTERVAL = 0.5  -- Time between spawning each creep
 
 -- Wave composition based on anger level (replaces old send ratios)
 Config.WAVE_ANGER_COMPOSITION = {
-    [0] = { voidSpawn = 3 },
-    [1] = { voidSpawn = 5 },
-    [2] = { voidSpawn = 8 },
-    [3] = { voidSpawn = 12 },
+    [0] = { voidSpawn = 2, voidSpider = 2 },
+    [1] = { voidSpawn = 4, voidSpider = 3 },
+    [2] = { voidSpawn = 5, voidSpider = 4 },
+    [3] = { voidSpawn = 6, voidSpider = 6 },
 }
 
 -- =============================================================================
@@ -577,16 +635,12 @@ Config.UI = {
 
 Config.UPGRADES = {
     maxLevel = 5,
-    baseCost = {
-        range = 50,
-        fireRate = 75,
-        damage = 100,
-    },
-    costMultiplier = 1.5,  -- Each level costs 1.5x previous
+    baseCost = 150,           -- Base cost for first upgrade
+    costMultiplier = 1.8,     -- Each level costs 1.8x previous
     bonusPerLevel = {
-        range = 0.15,      -- +15% per level
-        fireRate = 0.20,   -- +20% per level
-        damage = 0.25,     -- +25% per level
+        range = 0.10,         -- +10% per level = +50% at max
+        fireRate = 0.15,      -- +15% per level = +75% at max
+        damage = 0.20,        -- +20% per level = +100% at max
     },
     -- Panel upgrades (Void-related)
     panel = {
@@ -601,6 +655,9 @@ Config.UPGRADES = {
     },
 }
 
+-- Tower sell refund percentage
+Config.TOWER_SELL_REFUND = 0.75  -- 75% refund of total investment
+
 Config.COLORS.upgrade = {
     range = {0.5, 0.7, 0.85},             -- Soft blue
     fireRate = {0.85, 0.7, 0.4},          -- Warm amber
@@ -608,15 +665,18 @@ Config.COLORS.upgrade = {
     tooltip = {0.11, 0.10, 0.13, 0.95},
     tooltipBorder = {0.45, 0.42, 0.38},   -- Warm border
     selected = {0.6, 0.55, 0.4, 0.35},    -- Warm gold highlight
+    hover = {0.7, 0.65, 0.5, 0.25},       -- Warm gold glow for tower hover
 }
 
 Config.UI.tooltip = {
-    width = 180,
-    padding = 10,
-    buttonHeight = 35,
-    buttonSpacing = 5,
+    width = 200,
+    padding = 12,
+    buttonHeight = 32,
+    buttonSpacing = 8,
     offsetX = 20,
     offsetY = -10,
+    statsRowHeight = 22,
+    headerHeight = 28,
 }
 
 Config.UI.rangePreview = {
@@ -809,6 +869,7 @@ Config.PIXEL_ART = {
     SPRITE_SIZE = 16,  -- Base sprite size in pixels (16x16 for chunky pixel art)
     SCALE = Config.CELL_SIZE / 16,  -- Derive scale from cell size (64/16 = 4.0 exact)
     PROJECTILE_SCALE = 1.5,  -- Smaller scale for projectiles (5x5 sprite = 7.5px)
+    SHADOW_ALPHA = 0.5,  -- Shadow opacity for barrel shadows
 
     COLORS = {
         -- Metals/Structure (darker, more ominous)
@@ -846,29 +907,7 @@ Config.PIXEL_ART = {
         ['T'] = {0.12, 0.10, 0.14},  -- Tip - same as '#' (dark metal outline)
     },
 
-    TOWERS = {
-        -- Wall - simple brick/stone pattern (16x16)
-        wall = {
-            base = [[
-################
-#==e==##==e==#=#
-#e-==#--#==-e#-#
-#=-#--##--#-=#=#
-#--#########--##
-#e=-=e##e=-=e#-#
-#=-==---==--=#=#
-#-=####--####-=#
-#==-e##--##e-==#
-#e-==#--#==-e#-#
-#=-#--##--#-=#=#
-#--#########--##
-#e=-=e##e=-=e#-#
-#=-==---==--=#=#
-#-=####--####-=#
-################
-]],
-        },
-    },
+    TOWERS = {},
 
     -- Cursors (pixel art) - minimalist style
     CURSORS = {
@@ -975,7 +1014,7 @@ yYYYYy
 -- =============================================================================
 
 Config.AUDIO = {
-    enabled = true,
+    enabled = false,
     masterVolume = 0.5,
     sampleRate = 44100,
     bitDepth = 16,
@@ -1172,13 +1211,20 @@ Config.SHOWCASE = {
 -- =============================================================================
 
 Config.LIGHTING = {
+    -- PERFORMANCE: Lighting quality setting
+    -- "high" = 5 circles per light (original), "medium" = 3 circles, "low" = 2 circles
+    quality = "medium",
+
+    -- PERFORMANCE: Frame throttling - update lighting every N frames
+    -- 1 = every frame (60 FPS lighting), 2 = every other frame (30 FPS lighting)
+    updateEveryNFrames = 2,
+
     -- Ambient light (base brightness before lights are added)
     ambient = {0.55, 0.50, 0.60},  -- Brighter ambient (was 0.45, 0.40, 0.50)
 
     -- Light radii (pixels) - larger for diffuse feel
     radii = {
         tower = {
-            wall = 100,
             void_orb = 130,
             void_ring = 150,
             void_bolt = 140,
@@ -1193,7 +1239,6 @@ Config.LIGHTING = {
     -- Light colors (saturated for visibility, element-themed)
     colors = {
         tower = {
-            wall = {0.5, 0.5, 0.6},
             void_orb = {0.5, 0.95, 0.4},    -- Poison (green)
             void_ring = {0.5, 0.85, 1.0},   -- Ice (cyan)
             void_bolt = {0.4, 0.7, 1.0},    -- Electric (blue)
@@ -1220,7 +1265,6 @@ Config.LIGHTING = {
     -- Intensities - creeps much brighter
     intensities = {
         tower = {
-            wall = 0.6,
             void_orb = 1.0,
             void_ring = 1.1,
             void_bolt = 1.2,

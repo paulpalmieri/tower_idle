@@ -4,19 +4,64 @@
 
 local Config = require("src.config")
 local Procedural = require("src.rendering.procedural")
+local PixelDraw = require("src.rendering.pixel_draw")
 
 local TurretConcepts = {}
+
+-- =============================================================================
+-- CANVAS CACHING FOR PERFORMANCE
+-- =============================================================================
+
+-- Cache for pre-rendered stone bases (keyed by "seed_level")
+local baseCanvasCache = {}
+local BASE_CANVAS_SIZE = 64  -- Size of cached base canvas
+
+-- Get or create cached base canvas
+local function getCachedBase(seed, level)
+    local key = seed .. "_" .. (level or 1)
+    if not baseCanvasCache[key] then
+        -- Create and render base to canvas
+        local canvas = love.graphics.newCanvas(BASE_CANVAS_SIZE, BASE_CANVAS_SIZE)
+        love.graphics.setCanvas(canvas)
+        love.graphics.clear(0, 0, 0, 0)
+        -- Will be populated on first draw
+        love.graphics.setCanvas()
+        baseCanvasCache[key] = {
+            canvas = canvas,
+            rendered = false,
+            level = level or 1,
+        }
+    end
+    return baseCanvasCache[key]
+end
+
+-- Clear cache (call on tower destruction or level change)
+function TurretConcepts.clearCache(seed, level)
+    if seed then
+        local key = seed .. "_" .. (level or 1)
+        if baseCanvasCache[key] then
+            baseCanvasCache[key].canvas:release()
+            baseCanvasCache[key] = nil
+        end
+    else
+        -- Clear all
+        for k, v in pairs(baseCanvasCache) do
+            v.canvas:release()
+        end
+        baseCanvasCache = {}
+    end
+end
 
 -- =============================================================================
 -- VARIANT DEFINITIONS
 -- =============================================================================
 
 local VARIANTS = {
-    { name = "Void Orb",      shape = "orb" },
-    { name = "Void Ring",     shape = "ring" },
-    { name = "Void Bolt",     shape = "bolt" },
-    { name = "Void Eye",      shape = "eye" },
-    { name = "Void Star",     shape = "star" },
+    { name = "Void Orb",      shape = "orb",  sizeMultiplier = 0.8 },
+    { name = "Void Ring",     shape = "ring", sizeMultiplier = 1.0 },
+    { name = "Void Bolt",     shape = "bolt", sizeMultiplier = 1.0 },
+    { name = "Void Eye",      shape = "eye",  sizeMultiplier = 1.0 },
+    { name = "Void Star",     shape = "star", sizeMultiplier = 1.0 },
 }
 
 -- =============================================================================
@@ -77,10 +122,10 @@ local function drawPixelEllipse(cx, cy, radiusX, radiusY, ps, colorFunc)
                 local r, g, b, a = colorFunc(px, py, distNorm, angle)
                 if a and a > 0 then
                     love.graphics.setColor(r, g, b, a)
-                    love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                    PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
                 elseif not a then
                     love.graphics.setColor(r, g, b, 1)
-                    love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                    PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
                 end
             end
         end
@@ -91,8 +136,103 @@ end
 -- STONE BASE DRAWING
 -- =============================================================================
 
-local function drawStoneBase(x, y, ps, time, seed)
+local function drawStoneBase(x, y, ps, time, seed, level)
+    level = level or 1
     local baseRadius = 20
+    local topVisible = 0.9
+    -- Base height grows with level (adds floors upward)
+    local heightRatio = 0.20 + (level - 1) * 0.08
+
+    local ellipseRadiusX = baseRadius
+    local ellipseRadiusY = baseRadius * topVisible
+    local baseHeight = baseRadius * 2 * heightRatio
+
+    -- Fixed bottom position based on level 1 height (anchor point that never moves)
+    local level1Height = baseRadius * 2 * 0.20
+    local baseBottomY = y + level1Height * 0.5
+
+    -- Ground shadow stays at same position
+    local shadowY = baseBottomY + ps * 3
+    drawPixelEllipse(x, shadowY, ellipseRadiusX * 1.3, ellipseRadiusY * 0.7, ps,
+        function(px, py, distNorm, angle)
+            local fade = (1 - distNorm) * 0.5
+            return 0, 0, 0, fade
+        end)
+
+    -- Base layers (bottom to top, anchored at baseBottomY)
+    local numLayers = math.max(2, math.floor(baseHeight / ps))
+    for layer = 0, numLayers - 1 do
+        local layerProgress = layer / numLayers
+        local layerY = baseBottomY - layer * (baseHeight / numLayers)
+
+        -- Slight taper
+        local taperFactor = 1.0 - layerProgress * 0.08
+        local layerRadiusX = ellipseRadiusX * taperFactor
+        local layerRadiusY = ellipseRadiusY * taperFactor
+
+        drawPixelEllipse(x, layerY, layerRadiusX, layerRadiusY, ps,
+            function(px, py, distNorm, angle)
+                -- Stone texture noise
+                local noise = Procedural.fbm(px * 0.3 + seed, py * 0.3, seed, 2)
+
+                -- Vertical gradient
+                local vertBright = 0.6 + layerProgress * 0.4
+
+                -- Rim lighting
+                local rimLight = math.cos(angle + math.pi * 0.75) * 0.2 + 0.8
+
+                local baseMix = vertBright * rimLight
+                local r = BASE_COLORS.dark[1] + (BASE_COLORS.mid[1] - BASE_COLORS.dark[1]) * baseMix
+                local g = BASE_COLORS.dark[2] + (BASE_COLORS.mid[2] - BASE_COLORS.dark[2]) * baseMix
+                local b = BASE_COLORS.dark[3] + (BASE_COLORS.mid[3] - BASE_COLORS.dark[3]) * baseMix
+
+                -- Add noise variation
+                r = r + noise * 0.06 - 0.03
+                g = g + noise * 0.05 - 0.025
+                b = b + noise * 0.04 - 0.02
+
+                -- Edge darkening
+                if distNorm > 0.8 then
+                    local edgeDark = (distNorm - 0.8) / 0.2
+                    r = r * (1 - edgeDark * 0.3)
+                    g = g * (1 - edgeDark * 0.3)
+                    b = b * (1 - edgeDark * 0.3)
+                end
+
+                return clampColor(r, g, b)
+            end)
+    end
+
+    -- Top surface (positioned at bottom minus full height)
+    local topY = baseBottomY - baseHeight
+    drawPixelEllipse(x, topY, ellipseRadiusX * 0.92, ellipseRadiusY * 0.92, ps,
+        function(px, py, distNorm, angle)
+            local noise = Procedural.fbm(px * 0.25 + seed, py * 0.25 + seed * 0.5, seed, 2)
+
+            local centerBright = 0.85 + (1 - distNorm) * 0.15
+            local r = BASE_COLORS.mid[1] * centerBright + noise * 0.05
+            local g = BASE_COLORS.mid[2] * centerBright + noise * 0.04
+            local b = BASE_COLORS.mid[3] * centerBright + noise * 0.03
+
+            -- Subtle rim
+            if distNorm > 0.75 then
+                local rimFactor = (distNorm - 0.75) / 0.25
+                r = r + BASE_COLORS.highlight[1] * rimFactor * 0.2
+                g = g + BASE_COLORS.highlight[2] * rimFactor * 0.2
+                b = b + BASE_COLORS.highlight[3] * rimFactor * 0.2
+            end
+
+            return clampColor(r, g, b)
+        end)
+
+    return topY  -- Return top Y for void entity positioning
+end
+
+-- Draw stone base at a given scale (for emergence animation)
+local function drawStoneBaseScaled(x, y, ps, time, seed, scale)
+    scale = scale or 1
+
+    local baseRadius = 20 * scale
     local topVisible = 0.9
     local heightRatio = 0.20
 
@@ -100,11 +240,11 @@ local function drawStoneBase(x, y, ps, time, seed)
     local ellipseRadiusY = baseRadius * topVisible
     local baseHeight = baseRadius * 2 * heightRatio
 
-    -- Ground shadow
-    local shadowY = y + baseHeight * 0.5 + ps * 3
+    -- Ground shadow (scales with base)
+    local shadowY = y + baseHeight * 0.5 + ps * 3 * scale
     drawPixelEllipse(x, shadowY, ellipseRadiusX * 1.3, ellipseRadiusY * 0.7, ps,
         function(px, py, distNorm, angle)
-            local fade = (1 - distNorm) * 0.5
+            local fade = (1 - distNorm) * 0.5 * scale
             return 0, 0, 0, fade
         end)
 
@@ -174,7 +314,7 @@ local function drawStoneBase(x, y, ps, time, seed)
             return clampColor(r, g, b)
         end)
 
-    return topY  -- Return top Y for void entity positioning
+    return topY
 end
 
 -- =============================================================================
@@ -261,6 +401,10 @@ local function drawVoidOrb(x, y, radius, ps, time, seed, rotation, colors)
     -- Animated blob like creeps
     local gridR = math.ceil(radius / ps) + 2
 
+    -- OPTIMIZATION: Pre-compute time-based values outside loop
+    local timeOffset = time * 2
+    local seedOffset = seed * 0.1
+
     for py = -gridR, gridR do
         for px = -gridR, gridR do
             local worldX = x + px * ps
@@ -268,15 +412,16 @@ local function drawVoidOrb(x, y, radius, ps, time, seed, rotation, colors)
             local dist = math.sqrt((px * ps)^2 + (py * ps)^2)
             local angle = math.atan2(py, px)
 
-            -- Wobbling edge
-            local wobble = Procedural.fbm(angle * 2 + time * 2, time * 0.5, seed, 2) * 0.2
+            -- OPTIMIZATION: Replace fbm with cheap sin-based wobble
+            local wobble = math.sin(angle * 3 + timeOffset + seedOffset) * 0.1 +
+                           math.sin(angle * 5 - timeOffset * 0.7) * 0.05
             local edgeRadius = radius * (1 + wobble)
 
             if dist <= edgeRadius then
                 local distNorm = dist / edgeRadius
 
                 -- Swirling interior
-                local swirl = math.sin(angle * 3 + time * 2 + distNorm * 4) * 0.3 + 0.7
+                local swirl = math.sin(angle * 3 + timeOffset + distNorm * 4) * 0.3 + 0.7
 
                 local r = colors.core[1] + (colors.mid[1] - colors.core[1]) * swirl * (1 - distNorm)
                 local g = colors.core[2] + (colors.mid[2] - colors.core[2]) * swirl * (1 - distNorm)
@@ -292,7 +437,7 @@ local function drawVoidOrb(x, y, radius, ps, time, seed, rotation, colors)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -336,7 +481,7 @@ local function drawVoidCross(x, y, radius, ps, time, seed, rotation)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -376,7 +521,7 @@ local function drawVoidRing(x, y, radius, ps, time, seed, rotation, colors)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -423,7 +568,7 @@ local function drawVoidBolt(x, y, radius, ps, time, seed, rotation, colors)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -481,7 +626,7 @@ local function drawVoidEye(x, y, radius, ps, time, seed, rotation, colors)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -490,11 +635,15 @@ end
 local function drawVoidFlame(x, y, radius, ps, time, seed, rotation)
     local gridR = math.ceil(radius * 1.3 / ps) + 1
 
+    -- OPTIMIZATION: Pre-compute rotation values
+    local cosR = math.cos(rotation - math.pi/2)
+    local sinR = math.sin(rotation - math.pi/2)
+    local timeOffset = time * 3
+    local seedOffset = seed * 0.1
+
     for py = -gridR, gridR do
         for px = -gridR, gridR do
             -- Rotate for aiming (flame points in rotation direction)
-            local cosR = math.cos(rotation - math.pi/2)
-            local sinR = math.sin(rotation - math.pi/2)
             local rpx = px * cosR + py * sinR
             local rpy = -px * sinR + py * cosR
 
@@ -507,9 +656,10 @@ local function drawVoidFlame(x, y, radius, ps, time, seed, rotation)
 
             local flameWidth = radius * (1 - normalizedY * 0.7) * (0.8 + math.sin(normalizedY * 3 + time * 5) * 0.2)
 
-            -- Add noise for flickering edges
-            local noise = Procedural.fbm(rpx * 0.3 + time * 3, normalizedY * 2 + time * 4, seed, 2)
-            flameWidth = flameWidth * (1 + noise * 0.3)
+            -- OPTIMIZATION: Replace fbm with cheap sin-based noise
+            local noise = math.sin(rpx * 0.5 + timeOffset + seedOffset) * 0.3 +
+                          math.sin(normalizedY * 4 + time * 4) * 0.2
+            flameWidth = flameWidth * (1 + noise * 0.2)
 
             if math.abs(rpx * ps) <= flameWidth then
                 local distFromCenter = math.abs(rpx * ps) / flameWidth
@@ -530,7 +680,7 @@ local function drawVoidFlame(x, y, radius, ps, time, seed, rotation)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
 
             ::continue::
@@ -575,7 +725,7 @@ local function drawVoidStar(x, y, radius, ps, time, seed, rotation, colors)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -652,7 +802,7 @@ local function drawVoidSkull(x, y, radius, ps, time, seed, rotation)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -675,27 +825,249 @@ local function getVariantColors(variantIndex)
     return VARIANT_COLORS[variantIndex] or DEFAULT_COLORS
 end
 
-local function drawVoidTurret(x, y, variant, variantIndex, rotation, recoilOffset, time, seed)
+-- Draw build particles (called after tower is drawn)
+local function drawBuildParticles(particles, ps)
+    for _, p in ipairs(particles) do
+        local alpha = p.life / p.maxLife
+        local size = p.size or ps
+        love.graphics.setColor(p.r, p.g, p.b, alpha * (p.alpha or 1))
+        PixelDraw.rect(p.x - size/2, p.y - size/2, size, size)
+    end
+end
+
+-- Spawn rubble particles that fly OUTWARD radially (top-down view)
+local function spawnBaseRubbleParticles(particles, x, y, currentRadius, ps, count)
+    for i = 1, count do
+        local angle = math.random() * math.pi * 2
+        -- Spawn at the current edge of the emerging base
+        local spawnDist = currentRadius * (0.8 + math.random() * 0.3)
+        local px = x + math.cos(angle) * spawnDist
+        local py = y + math.sin(angle) * spawnDist * 0.6  -- Squash for perspective
+
+        -- Fly outward radially
+        local speed = 40 + math.random() * 60
+        local vx = math.cos(angle) * speed
+        local vy = math.sin(angle) * speed * 0.6  -- Squash for perspective
+
+        table.insert(particles, {
+            x = px,
+            y = py,
+            vx = vx,
+            vy = vy,
+            life = 0.3 + math.random() * 0.25,
+            maxLife = 0.3 + math.random() * 0.25,
+            size = ps * (0.4 + math.random() * 0.6),
+            r = BASE_COLORS.mid[1] + (math.random() - 0.5) * 0.15,
+            g = BASE_COLORS.mid[2] + (math.random() - 0.5) * 0.15,
+            b = BASE_COLORS.mid[3] + (math.random() - 0.5) * 0.12,
+            alpha = 0.8,
+        })
+    end
+end
+
+-- Spawn void materialization particles that get pulled inward
+local function spawnVoidGravityParticles(particles, x, voidY, voidRadius, colors, count)
+    for i = 1, count do
+        local angle = math.random() * math.pi * 2
+        local dist = voidRadius * (2.5 + math.random() * 1.5)  -- Start far out
+        local px = x + math.cos(angle) * dist
+        local py = voidY + math.sin(angle) * dist
+
+        -- Use void entity's edge color for particles
+        local colorMix = math.random()
+        local r = colors.edge[1] * colorMix + colors.glow[1] * (1 - colorMix)
+        local g = colors.edge[2] * colorMix + colors.glow[2] * (1 - colorMix)
+        local b = colors.edge[3] * colorMix + colors.glow[3] * (1 - colorMix)
+
+        table.insert(particles, {
+            x = px,
+            y = py,
+            vx = 0,
+            vy = 0,
+            targetX = x,
+            targetY = voidY,
+            gravity = 200 + math.random() * 100,
+            life = 0.5 + math.random() * 0.4,
+            maxLife = 0.5 + math.random() * 0.4,
+            size = 3 * (0.4 + math.random() * 0.4),
+            r = r,
+            g = g,
+            b = b,
+            alpha = 0.9,
+        })
+    end
+end
+
+local function drawVoidTurret(x, y, variant, variantIndex, rotation, recoilOffset, time, seed, buildProgress, buildParticles, level)
     local ps = 3
-    local voidRadius = 14
-    local levitateHeight = voidRadius * 1.2  -- How high the void floats above base
+    local baseVoidRadius = 14
+    level = level or 1
 
-    -- Draw stone base and get top Y position
-    local baseTopY = drawStoneBase(x, y, ps, time, seed)
+    -- Apply per-variant size multiplier and level scaling
+    local variantSize = variant.sizeMultiplier or 1.0
+    local levelScale = 1 + (level - 1) * 0.10
+    local voidRadius = baseVoidRadius * variantSize * levelScale
+    local levitateHeight = baseVoidRadius * 0.7  -- Lowered to sit closer to base
 
-    -- Void entity levitates above base
-    local voidY = baseTopY - levitateHeight
+    -- Default to fully built
+    buildProgress = buildProgress or 1
+    buildParticles = buildParticles or {}
 
-    -- Draw shadow of void entity on base (shadow stays on base surface)
-    drawVoidShadowOnBase(x, baseTopY, voidRadius, ps)
+    -- Calculate phase thresholds
+    local buildCfg = Config.TOWER_BUILD
+    local basePhaseEnd = buildCfg.basePhaseDuration / buildCfg.duration  -- ~0.2
 
-    -- Get colors for this variant
-    local colors = getVariantColors(variantIndex)
+    -- Base emergence progress (0 to 1 during base phase)
+    local baseProgress = math.min(1, buildProgress / basePhaseEnd)
+    -- Void materialization progress (0 to 1 during void phase)
+    local voidProgress = math.max(0, (buildProgress - basePhaseEnd) / (1 - basePhaseEnd))
 
-    -- Draw the void entity shape
-    local shapeDrawer = SHAPE_DRAWERS[variant.shape]
-    if shapeDrawer then
-        shapeDrawer(x, voidY, voidRadius, ps, time, seed, rotation, colors)
+    -- ===========================================
+    -- PHASE 1: Base emerges from ground (scales outward, top-down view)
+    -- ===========================================
+
+    local baseRadius = 20
+    -- Calculate height based on level (same formula as drawStoneBase)
+    local heightRatio = 0.20 + (level - 1) * 0.08
+    local baseHeight = baseRadius * 2 * heightRatio
+    -- Fixed bottom anchor (level 1 position)
+    local level1Height = baseRadius * 2 * 0.20
+    local baseBottomY = y + level1Height * 0.5
+    local fullBaseTopY = baseBottomY - baseHeight
+
+    if baseProgress < 1 then
+        -- Ease with overshoot for punchy "bursting through" feel
+        local easedBase
+        if baseProgress < 0.6 then
+            -- Fast burst
+            local t = baseProgress / 0.6
+            easedBase = t * t * (3 - 2 * t) * 1.1  -- Overshoot slightly
+        else
+            -- Settle back
+            local t = (baseProgress - 0.6) / 0.4
+            easedBase = 1.1 - 0.1 * t  -- Ease back to 1.0
+        end
+        easedBase = math.max(0.01, math.min(1.1, easedBase))
+
+        -- Current scale of the base
+        local currentScale = easedBase
+        local currentRadius = baseRadius * currentScale
+
+        -- Draw scaled base (punching through from below)
+        if currentRadius > 2 then
+            drawStoneBaseScaled(x, y, ps, time, seed, currentScale)
+
+            -- Spawn rubble at the expanding edge
+            if #buildParticles < 18 and math.random() < 0.5 then
+                spawnBaseRubbleParticles(buildParticles, x, y, currentRadius, ps, 3)
+            end
+        end
+    else
+        -- OPTIMIZATION: Use cached base canvas for fully built towers
+        local cached = getCachedBase(seed, level)
+        if not cached.rendered then
+            -- Render base to canvas once
+            local prevCanvas = love.graphics.getCanvas()
+            love.graphics.setCanvas(cached.canvas)
+            love.graphics.clear(0, 0, 0, 0)
+            -- Draw base centered in canvas
+            drawStoneBase(BASE_CANVAS_SIZE / 2, BASE_CANVAS_SIZE / 2, ps, 0, seed, level)
+            love.graphics.setCanvas(prevCanvas)
+            cached.rendered = true
+        end
+        -- Draw cached base canvas
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(cached.canvas, x - BASE_CANVAS_SIZE / 2, y - BASE_CANVAS_SIZE / 2)
+    end
+
+    -- ===========================================
+    -- PHASE 2: Void entity materializes
+    -- ===========================================
+
+    if voidProgress > 0 then
+        local voidY = fullBaseTopY - levitateHeight
+
+        -- Get colors for this variant (final colors)
+        local colors = getVariantColors(variantIndex)
+
+        -- Spawn gravity particles during materialization (particles drawn toward center)
+        if voidProgress < 0.85 and #buildParticles < 25 and math.random() < 0.35 then
+            spawnVoidGravityParticles(buildParticles, x, voidY, voidRadius, colors, 2)
+        end
+
+        -- Ease the materialization with overshoot for snappy feel
+        local easedVoid
+        if voidProgress < 0.5 then
+            -- Fast start
+            easedVoid = 2 * voidProgress * voidProgress
+        else
+            -- Gentle finish
+            local t = voidProgress - 0.5
+            easedVoid = 0.5 + 2 * t * (1 - t) + 0.5 * t * t
+        end
+        easedVoid = math.min(1, easedVoid)
+
+        -- Scale effect: void grows from tiny to full size
+        local currentRadius = voidRadius * easedVoid
+
+        if currentRadius > 2 then
+            -- Draw shadow on base top (scales with entity)
+            local shadowAlpha = easedVoid * 0.35
+            drawPixelEllipse(x, fullBaseTopY, currentRadius * 1.1, currentRadius * 0.45, ps,
+                function(px, py, distNorm, angle)
+                    local fade = (1 - distNorm * distNorm) * shadowAlpha
+                    return 0, 0, 0, fade
+                end)
+
+            -- Draw the void entity shape at current scale
+            local shapeDrawer = SHAPE_DRAWERS[variant.shape]
+            if shapeDrawer then
+                shapeDrawer(x, voidY, currentRadius, ps, time, seed, rotation, colors)
+            end
+
+            -- Max level effect: pulsing aura and sparkles
+            if level >= 5 and easedVoid >= 1 then
+                -- Pulsing outer aura ring
+                local pulse = math.sin(time * 3) * 0.3 + 0.7
+                local auraRadius = currentRadius * 1.4
+                love.graphics.setBlendMode("add")
+
+                -- Draw aura ring
+                for i = 0, 7 do
+                    local angle = (i / 8) * math.pi * 2 + time * 0.5
+                    local px = x + math.cos(angle) * auraRadius
+                    local py = voidY + math.sin(angle) * auraRadius * 0.9
+                    local sparkAlpha = pulse * 0.6
+                    love.graphics.setColor(colors.glow[1], colors.glow[2], colors.glow[3], sparkAlpha)
+                    PixelDraw.rect(px - ps/2, py - ps/2, ps, ps)
+                end
+
+                -- Random sparkles around the entity
+                for i = 1, 4 do
+                    local sparkTime = time * 2 + i * 1.7
+                    local sparkPhase = (sparkTime % 1)
+                    if sparkPhase < 0.5 then
+                        local sparkAngle = Procedural.hash(i, math.floor(time * 0.5), seed) * math.pi * 2
+                        local sparkDist = currentRadius * (0.8 + Procedural.hash(i + 5, math.floor(time), seed) * 0.8)
+                        local sx = x + math.cos(sparkAngle + time * 0.3) * sparkDist
+                        local sy = voidY + math.sin(sparkAngle + time * 0.3) * sparkDist * 0.9
+                        local sparkAlpha = (0.5 - sparkPhase) * 2 * 0.8
+                        love.graphics.setColor(colors.glow[1], colors.glow[2], colors.glow[3], sparkAlpha)
+                        PixelDraw.rect(sx - ps/2, sy - ps/2, ps, ps)
+                    end
+                end
+
+                love.graphics.setBlendMode("alpha")
+            end
+        end
+    end
+
+    -- ===========================================
+    -- Draw particles on top
+    -- ===========================================
+    if #buildParticles > 0 then
+        drawBuildParticles(buildParticles, ps)
+        love.graphics.setColor(1, 1, 1, 1)  -- Reset color
     end
 end
 
@@ -720,7 +1092,7 @@ local function drawMuzzleFlash(x, y, rotation, time, seed, ps, colors)
 
     -- Bright void burst
     love.graphics.setColor(colors.glow[1], colors.glow[2], colors.glow[3], 0.95)
-    love.graphics.rectangle("fill", muzzleX - ps * 1.5, muzzleY - ps * 1.5, ps * 3, ps * 3)
+    PixelDraw.rect(muzzleX - ps * 1.5, muzzleY - ps * 1.5, ps * 3, ps * 3)
 
     -- Void sparks
     for i = 1, 6 do
@@ -729,7 +1101,7 @@ local function drawMuzzleFlash(x, y, rotation, time, seed, ps, colors)
         local fx = muzzleX + math.cos(angle) * dist
         local fy = muzzleY + math.sin(angle) * dist
         love.graphics.setColor(colors.edge[1], colors.edge[2], colors.edge[3], 0.8)
-        love.graphics.rectangle("fill", fx - ps/2, fy - ps/2, ps, ps)
+        PixelDraw.rect(fx - ps/2, fy - ps/2, ps, ps)
     end
 end
 
@@ -760,7 +1132,7 @@ local function drawThumbnailOrb(x, y, radius, ps, time, colors)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -794,7 +1166,7 @@ local function drawThumbnailRing(x, y, radius, ps, time, colors)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -830,7 +1202,7 @@ local function drawThumbnailBolt(x, y, radius, ps, time, colors)
                 local b = colors.mid[3] + colors.edge[3] * 0.4
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -864,7 +1236,7 @@ local function drawThumbnailEye(x, y, radius, ps, time, colors)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -897,7 +1269,7 @@ local function drawThumbnailStar(x, y, radius, ps, time, colors)
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
-                love.graphics.rectangle("fill", worldX - ps/2, worldY - ps/2, ps, ps)
+                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
             end
         end
     end
@@ -937,12 +1309,45 @@ function TurretConcepts.drawThumbnail(variantIndex, x, y, scale)
     return false
 end
 
-function TurretConcepts.drawVariant(variantIndex, x, y, rotation, recoilOffset, time, seed)
+function TurretConcepts.drawVariant(variantIndex, x, y, rotation, recoilOffset, time, seed, buildProgress, buildParticles, level)
     local variant = VARIANTS[variantIndex]
     if not variant then return false end
 
-    drawVoidTurret(x, y, variant, variantIndex, rotation, recoilOffset or 0, time or 0, seed or 0)
+    drawVoidTurret(x, y, variant, variantIndex, rotation, recoilOffset or 0, time or 0, seed or 0, buildProgress or 1, buildParticles, level or 1)
     return true
+end
+
+-- Draw only the void entity shape (no stone base) - used for glow effects
+function TurretConcepts.drawVoidEntityOnly(variantIndex, x, y, rotation, time, seed, level)
+    local variant = VARIANTS[variantIndex]
+    if not variant then return false end
+
+    local ps = 3
+    local baseVoidRadius = 14
+    level = level or 1
+
+    -- Apply per-variant size multiplier and level scaling
+    local variantSize = variant.sizeMultiplier or 1.0
+    local levelScale = 1 + (level - 1) * 0.10
+    local voidRadius = baseVoidRadius * variantSize * levelScale
+
+    -- Calculate void Y position (same as in drawVoidTurret)
+    local baseRadius = 20
+    local heightRatio = 0.20 + (level - 1) * 0.08
+    local baseHeight = baseRadius * 2 * heightRatio
+    local level1Height = baseRadius * 2 * 0.20
+    local baseBottomY = y + level1Height * 0.5
+    local fullBaseTopY = baseBottomY - baseHeight
+    local levitateHeight = baseVoidRadius * 0.7
+    local voidY = fullBaseTopY - levitateHeight
+
+    local colors = getVariantColors(variantIndex)
+    local shapeDrawer = SHAPE_DRAWERS[variant.shape]
+    if shapeDrawer then
+        shapeDrawer(x, voidY, voidRadius, ps, time or 0, seed or 0, rotation or 0, colors)
+        return true
+    end
+    return false
 end
 
 function TurretConcepts.drawMuzzleFlashVariant(variantIndex, x, y, rotation, time, seed)

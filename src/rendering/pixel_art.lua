@@ -232,7 +232,7 @@ function PixelArt.drawTower(towerType, x, y, barrelRotation, recoilOffset, custo
         local shadowAttachY = attachY - sin * recoilDist * scale + shadowOffsetY
 
         -- Draw rotated shadow rectangle
-        love.graphics.setColor(0, 0, 0, 0.5)  -- DEBUG: boosted from 0.3
+        love.graphics.setColor(0, 0, 0, Config.PIXEL_ART.SHADOW_ALPHA)
         love.graphics.push()
         love.graphics.translate(shadowAttachX, shadowAttachY)
         love.graphics.rotate(barrelRotation)

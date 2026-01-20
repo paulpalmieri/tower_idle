@@ -47,6 +47,7 @@ function Void:new(x, y)
 end
 
 -- Generate pixel pool for creep-style rendering (copied from creep.lua)
+-- OPTIMIZED: Pre-computes wobble phase for faster draw
 function Void:generatePixels()
     self.pixels = {}
     local ps = self.pixelSize
@@ -76,6 +77,14 @@ function Void:generatePixels()
                 cfg.octaves
             )
 
+            -- Pre-compute wobble phase offset (OPTIMIZATION)
+            local wobblePhase = Procedural.fbm(
+                angle * cfg.wobbleFrequency,
+                0,
+                self.seed + 500,
+                2
+            ) * math.pi * 2
+
             -- Only include pixels that could potentially be visible
             local maxEdgeRadius = radius * (0.7 + 0.5 + cfg.wobbleAmount * 0.5)
             if dist < maxEdgeRadius then
@@ -89,6 +98,7 @@ function Void:generatePixels()
                     distNorm = distNorm,
                     angle = angle,
                     baseEdgeNoise = baseEdgeNoise,
+                    wobblePhase = wobblePhase,
                     rnd = Procedural.hash(px, py, self.seed + 888),
                     rnd2 = Procedural.hash(px * 2.1, py * 1.7, self.seed + 777),
                 })
@@ -266,15 +276,18 @@ function Void:draw()
     local shadowY = self.y + radius * shadowCfg.offsetY
     love.graphics.ellipse("fill", self.x, shadowY, shadowWidth, shadowHeight)
 
+    -- OPTIMIZATION: Pre-compute time-based values outside loop
+    local wobbleTime = t * cfg.wobbleSpeed
+    local baseN1 = Procedural.fbm(t * 0.8, t * 0.2, self.seed, 2)
+    local baseN2 = Procedural.fbm(-t * 0.4, t * 0.6, self.seed + 50, 2)
+    local sparkleTimeX = math.floor(t * 8)
+    local sparkleTimeY = math.floor(t * 5)
+    local sparkleThreshold = cfg.sparkleThreshold or 0.96
+
     -- Draw each pixel with animated void effects (matching Creep:draw)
     for _, p in ipairs(self.pixels) do
-        -- Calculate animated edge boundary for this pixel's angle
-        local wobbleNoise = Procedural.fbm(
-            p.angle * cfg.wobbleFrequency + t * cfg.wobbleSpeed,
-            t * cfg.wobbleSpeed * 0.3,
-            self.seed + 500,
-            2
-        )
+        -- OPTIMIZATION: Use pre-computed wobblePhase instead of fbm per pixel
+        local wobbleNoise = math.sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
         local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
 
         -- Skip pixels outside the current animated boundary
@@ -289,17 +302,16 @@ function Void:draw()
         local screenX = self.x + p.relX - ps / 2
         local screenY = self.y + p.relY - ps / 2
 
-        -- Animated noise layers (like creep)
-        local n1 = Procedural.fbm(p.px * 0.3 + t * 0.8, p.py * 0.3 + t * 0.2, self.seed, 3)
-        local n2 = Procedural.fbm(p.px * 0.2 - t * 0.4, p.py * 0.4 + t * 0.6, self.seed + 50, 2)
-        local n3 = Procedural.hash(p.px + math.floor(t * 4), p.py, self.seed + 111)
+        -- OPTIMIZATION: Use per-void base noise + per-pixel variation
+        local n1 = baseN1 + p.rnd * 0.3 + p.distNorm * 0.2
+        local n2 = baseN2 + p.rnd2 * 0.2
+        local n3 = p.rnd
 
-        -- Swirling pattern
+        -- Swirling pattern (cheap - just sin)
         local swirl = math.sin(p.angle * 3 + t * cfg.swirlSpeed + p.distNorm * 4) * 0.5 + 0.5
 
-        -- Random sparkles (use config threshold for more frequent sparkles)
-        local sparkle = Procedural.hash(p.px + math.floor(t * 8), p.py + math.floor(t * 5), self.seed + 333)
-        local sparkleThreshold = cfg.sparkleThreshold or 0.96
+        -- Random sparkles - use pre-computed time values
+        local sparkle = Procedural.hash(p.px + sparkleTimeX, p.py + sparkleTimeY, self.seed + 333)
         local isSpark = sparkle > sparkleThreshold
 
         -- Color calculation
@@ -335,10 +347,10 @@ function Void:draw()
                 b = b + 0.12
             end
 
-            -- Vertical tear streaks (like creep)
-            local tear = Procedural.fbm(p.px * 0.1, p.py * 0.5 + t * 0.5, self.seed + 200, 2)
-            if tear > 0.58 and p.rnd > 0.4 then
-                local bright = (tear - 0.58) * 2 + n3 * 0.2
+            -- OPTIMIZATION: Simplified tear streaks using pre-computed values
+            local tearBase = p.rnd * 0.5 + p.rnd2 * 0.3 + math.sin(p.py * 0.5 + t * 0.5) * 0.2
+            if tearBase > 0.58 and p.rnd > 0.4 then
+                local bright = (tearBase - 0.58) * 2 + n3 * 0.2
                 r = r + bright * 0.3
                 b = b + bright * 0.4
             end

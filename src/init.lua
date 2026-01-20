@@ -2,6 +2,7 @@
 -- Game initialization and main loop coordination
 
 local Config = require("src.config")
+local ConfigValidator = require("src.core.config_validator")
 local EventBus = require("src.core.event_bus")
 local StateMachine = require("src.core.state_machine")
 
@@ -12,6 +13,7 @@ local Waves = require("src.systems.waves")
 local Combat = require("src.systems.combat")
 local Pathfinding = require("src.systems.pathfinding")
 local Audio = require("src.systems.audio")
+local Profiler = require("src.systems.profiler")
 
 -- Rendering
 local Fonts = require("src.rendering.fonts")
@@ -25,6 +27,11 @@ local Tower = require("src.entities.tower")
 local Void = require("src.entities.void")
 local Creep = require("src.entities.creep")
 local ExitPortal = require("src.entities.exit_portal")
+
+-- New projectile/effect entities
+local LobbedProjectile = require("src.entities.lobbed_projectile")
+local Blackhole = require("src.entities.blackhole")
+local LightningProjectile = require("src.entities.lightning_projectile")
 
 -- UI
 local Panel = require("src.ui.panel")
@@ -43,17 +50,29 @@ local state = {
     cadavers = {},         -- Dead creep remains on the floor
     groundEffects = {},    -- Poison clouds, burning ground, etc.
     chainLightnings = {},  -- Chain lightning visual effects
+    -- New collections for redesigned towers
+    lobbedProjectiles = {},    -- Parabolic arc bombs (void_star)
+    blackholes = {},           -- Pull-effect fields (void_eye)
+    lightningProjectiles = {}, -- Piercing bolts (void_ring)
+    explosionBursts = {},      -- Explosion burst particles
     flowField = nil,
     gameSpeedIndex = 1,
     selectedTower = nil,   -- Reference to selected placed tower
+    hoveredTower = nil,    -- Reference to tower under mouse cursor
     isDragging = false,    -- Drag-to-place active
     lastPlacedCell = nil,  -- {gridX, gridY} to avoid double-placing
     void = nil,            -- The Void entity
     exitPortal = nil,      -- The Exit Portal entity (at base)
     autoClickTimer = 0,    -- Timer for auto-clicker
+    -- Tower Y-sorting cache (optimization: towers don't move)
+    towersSortedByY = {},  -- Cached sorted tower list
+    towersSortDirty = true,  -- Flag to rebuild cache when towers change
 }
 
 function Game.load()
+    -- Validate config before anything else
+    ConfigValidator.validateOrDie(Config)
+
     -- Set up graphics
     love.graphics.setBackgroundColor(Config.COLORS.background)
     love.graphics.setDefaultFilter("nearest", "nearest")
@@ -108,11 +127,54 @@ function Game.load()
     -- Initialize floating numbers system
     FloatingNumbers.init()
 
+    -- Initialize profiler
+    Profiler.init()
+
     -- Set up event listeners
     Game.setupEvents()
 
+    -- Spawn test towers (levels 1-5 for each turret type, one row per type)
+    Game.spawnTestTowers()
+
     -- Start game
     StateMachine.transition("playing")
+end
+
+-- Spawn test towers for debugging: one row per tower type, levels 1-5
+function Game.spawnTestTowers()
+    local towerTypes = {"void_orb", "void_ring", "void_bolt", "void_eye", "void_star"}
+
+    for row, towerType in ipairs(towerTypes) do
+        for level = 1, 5 do
+            local gridX = level  -- Columns 1-5
+            local gridY = row    -- Rows 1-6
+
+            -- Check if cell is valid and can place
+            if Grid.isValidCell(gridX, gridY) and Pathfinding.canPlaceTowerAt(Grid, gridX, gridY) then
+                local screenX, screenY = Grid.gridToScreen(gridX, gridY)
+                local tower = Tower(screenX, screenY, towerType, gridX, gridY)
+
+                -- Skip build animation for test towers
+                tower.attackState = Tower.STATE_IDLE
+                tower.buildProgress = 1
+                tower.buildTimer = 0
+
+                -- Upgrade tower to target level
+                for _ = 2, level do
+                    tower:upgrade()
+                end
+
+                -- Place in grid and add to towers list
+                if Grid.placeTower(gridX, gridY, tower) then
+                    table.insert(state.towers, tower)
+                    state.towersSortDirty = true
+                end
+            end
+        end
+    end
+
+    -- Recompute pathfinding after placing all towers
+    state.flowField = Pathfinding.computeFlowField(Grid)
 end
 
 function Game.setupEvents()
@@ -123,6 +185,11 @@ function Game.setupEvents()
 
     EventBus.on("creep_killed", function(data)
         Economy.addGold(data.reward)
+        -- Track kill to the tower that dealt the final blow
+        local creep = data.creep
+        if creep and creep.killedBy and not creep.killedBy.dead then
+            creep.killedBy:recordKill()
+        end
     end)
 
     EventBus.on("creep_reached_base", function(data)
@@ -153,6 +220,29 @@ function Game.setupEvents()
         -- (they are drawn at base res, then scaled by the transform)
         Background.regenerate(Grid.getPlayAreaWidth(), Config.SCREEN_HEIGHT)
         Lighting.resize()
+    end)
+
+    -- New tower attack spawn events
+    EventBus.on("spawn_lobbed_projectile", function(data)
+        local proj = LobbedProjectile(
+            data.startX, data.startY,
+            data.targetX, data.targetY,
+            data.damage, data.sourceTower
+        )
+        table.insert(state.lobbedProjectiles, proj)
+    end)
+
+    EventBus.on("spawn_blackhole", function(data)
+        local hole = Blackhole(data.x, data.y, data.sourceTower)
+        table.insert(state.blackholes, hole)
+    end)
+
+    EventBus.on("spawn_lightning_bolt", function(data)
+        local bolt = LightningProjectile(
+            data.x, data.y, data.angle,
+            data.damage, data.sourceTower
+        )
+        table.insert(state.lightningProjectiles, bolt)
     end)
 end
 
@@ -191,11 +281,61 @@ end
 local Procedural = require("src.rendering.procedural")
 
 -- Draw a single cadaver (collapsed void remains)
-local function _drawCadaver(cadaver)
+-- Pre-compute cadaver visible pixels when created (OPTIMIZATION)
+-- Called once when cadaver is created, stores only visible pixels with pre-computed colors
+local function _prepareCadaverPixels(cadaver)
     local cfg = Config.VOID_SPAWN
     local colors = cfg.colors
     local ps = cadaver.pixelSize
-    local t = cadaver.time  -- Frozen animation time
+    local t = cadaver.time
+    local radius = cadaver.size
+
+    cadaver.visiblePixels = {}
+
+    for _, p in ipairs(cadaver.pixels) do
+        -- Use pre-computed wobblePhase if available, otherwise calculate once
+        local wobbleNoise
+        if p.wobblePhase then
+            wobbleNoise = math.sin(t * cfg.wobbleSpeed + p.wobblePhase) * 0.5 + 0.5
+        else
+            wobbleNoise = math.sin(p.angle * cfg.wobbleFrequency + t * cfg.wobbleSpeed) * 0.5 + 0.5
+        end
+        local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
+
+        -- Skip pixels outside the frozen boundary
+        if p.dist >= animatedEdgeRadius then
+            goto continue
+        end
+
+        -- Pre-compute color
+        local isEdge = p.dist > animatedEdgeRadius - ps * 1.5
+        local r, g, b
+        if isEdge then
+            r = colors.edgeGlow[1] * 0.5
+            g = colors.edgeGlow[2] * 0.5
+            b = colors.edgeGlow[3] * 0.5
+        else
+            local blend = p.distNorm * 0.5 + p.rnd * 0.2
+            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * blend
+            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * blend
+            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * blend
+        end
+
+        table.insert(cadaver.visiblePixels, {
+            relX = p.relX,
+            relY = p.relY,
+            r = r, g = g, b = b,
+        })
+
+        ::continue::
+    end
+
+    -- Clear original pixels to save memory
+    cadaver.pixels = nil
+end
+
+local function _drawCadaver(cadaver)
+    local ps = cadaver.pixelSize
 
     -- Calculate fade progress (0 = fresh, 1 = fully faded)
     local fadeProgress = cadaver.fadeTimer / Config.CADAVER_FADE_DURATION
@@ -204,10 +344,15 @@ local function _drawCadaver(cadaver)
     -- Skip drawing if nearly invisible
     if fadeAlpha < 0.01 then return end
 
+    -- Pre-compute visible pixels on first draw
+    if not cadaver.visiblePixels then
+        _prepareCadaverPixels(cadaver)
+    end
+
     -- Cadaver settings
-    local alpha = 0.35 * fadeAlpha  -- Base opacity multiplied by fade
-    local squashY = 0.75           -- Flatten vertically (collapsed look)
-    local squashX = 1.0           -- Keep horizontal size natural
+    local alpha = 0.35 * fadeAlpha
+    local squashY = 0.75
+    local squashX = 1.0
 
     -- Draw flattened shadow first
     love.graphics.setColor(0, 0, 0, alpha * 0.3)
@@ -215,50 +360,14 @@ local function _drawCadaver(cadaver)
     local shadowHeight = cadaver.size * 0.5
     love.graphics.ellipse("fill", cadaver.x, cadaver.y, shadowWidth, shadowHeight)
 
-    -- Draw each pixel with static void texture (no animation)
-    local radius = cadaver.size
-    for _, p in ipairs(cadaver.pixels) do
-        -- Use frozen boundary calculation
-        local wobbleNoise = Procedural.fbm(
-            p.angle * cfg.wobbleFrequency + t * cfg.wobbleSpeed,
-            t * cfg.wobbleSpeed * 0.3,
-            cadaver.seed + 500,
-            2
-        )
-        local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
-
-        -- Skip pixels outside the frozen boundary
-        if p.dist >= animatedEdgeRadius then
-            goto continue
-        end
-
-        -- Apply squash transform (flatten vertically, spread horizontally)
-        local screenX = cadaver.x + p.relX * squashX - ps * squashX / 2
-        local screenY = cadaver.y + p.relY * squashY - ps * squashY / 2
-        local pixelW = ps * squashX
-        local pixelH = ps * squashY
-
-        -- Simplified color: darker, desaturated void remains
-        local isEdge = p.dist > animatedEdgeRadius - ps * 1.5
-
-        local r, g, b
-        if isEdge then
-            -- Faded edge glow
-            r = colors.edgeGlow[1] * 0.5
-            g = colors.edgeGlow[2] * 0.5
-            b = colors.edgeGlow[3] * 0.5
-        else
-            -- Dark interior with subtle variation
-            local blend = p.distNorm * 0.5 + p.rnd * 0.2
-            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * blend
-            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * blend
-            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * blend
-        end
-
-        love.graphics.setColor(r, g, b, alpha)
+    -- Draw pre-computed visible pixels (no per-pixel calculations)
+    local pixelW = ps * squashX
+    local pixelH = ps * squashY
+    for _, vp in ipairs(cadaver.visiblePixels) do
+        local screenX = cadaver.x + vp.relX * squashX - ps * squashX / 2
+        local screenY = cadaver.y + vp.relY * squashY - ps * squashY / 2
+        love.graphics.setColor(vp.r, vp.g, vp.b, alpha)
         love.graphics.rectangle("fill", screenX, screenY, pixelW, pixelH)
-
-        ::continue::
     end
 end
 
@@ -316,14 +425,27 @@ function Game.update(dt)
     end
 
     -- Update systems
+    Profiler.start("economy_update")
     Economy.update(dt)
+    Profiler.stop("economy_update")
+
+    Profiler.start("waves_update")
     Waves.update(dt, state.creeps)
+    Profiler.stop("waves_update")
+
+    -- Rebuild spatial hash once per frame for efficient range queries
+    Profiler.start("spatial_hash_rebuild")
+    Combat.rebuildSpatialHash(state.creeps)
+    Profiler.stop("spatial_hash_rebuild")
 
     -- Update entities
+    Profiler.start("towers_update")
     for _, tower in ipairs(state.towers) do
         tower:update(dt, state.creeps, state.projectiles, state.groundEffects, state.chainLightnings)
     end
+    Profiler.stop("towers_update")
 
+    Profiler.start("projectiles_update")
     for i = #state.projectiles, 1, -1 do
         local proj = state.projectiles[i]
         proj:update(dt, state.creeps, state.groundEffects, state.chainLightnings)
@@ -331,8 +453,10 @@ function Game.update(dt)
             table.remove(state.projectiles, i)
         end
     end
+    Profiler.stop("projectiles_update")
 
     -- Update ground effects (poison clouds, burning ground)
+    Profiler.start("ground_effects_update")
     for i = #state.groundEffects, 1, -1 do
         local effect = state.groundEffects[i]
         effect:update(dt, state.creeps)
@@ -340,6 +464,7 @@ function Game.update(dt)
             table.remove(state.groundEffects, i)
         end
     end
+    Profiler.stop("ground_effects_update")
 
     -- Update chain lightnings
     for i = #state.chainLightnings, 1, -1 do
@@ -350,6 +475,53 @@ function Game.update(dt)
         end
     end
 
+    -- Update blackholes (before creeps - affects their movement)
+    for i = #state.blackholes, 1, -1 do
+        local hole = state.blackholes[i]
+        hole:update(dt, state.creeps)
+        if hole.dead then
+            table.remove(state.blackholes, i)
+        end
+    end
+
+    -- Update lobbed projectiles
+    for i = #state.lobbedProjectiles, 1, -1 do
+        local proj = state.lobbedProjectiles[i]
+        proj:update(dt, state.creeps, state.groundEffects, state.explosionBursts)
+        if proj.dead then
+            table.remove(state.lobbedProjectiles, i)
+        end
+    end
+
+    -- Update lightning projectiles
+    for i = #state.lightningProjectiles, 1, -1 do
+        local proj = state.lightningProjectiles[i]
+        proj:update(dt, state.creeps)
+        if proj.dead then
+            table.remove(state.lightningProjectiles, i)
+        end
+    end
+
+    -- Update explosion bursts
+    for i = #state.explosionBursts, 1, -1 do
+        local burst = state.explosionBursts[i]
+        burst.time = burst.time + dt
+
+        -- Update particles
+        for _, p in ipairs(burst.particles) do
+            p.x = p.x + p.vx * dt
+            p.y = p.y + p.vy * dt
+            p.life = p.life - dt
+            -- Gravity
+            p.vy = p.vy + 200 * dt
+        end
+
+        if burst.time >= burst.duration then
+            table.remove(state.explosionBursts, i)
+        end
+    end
+
+    Profiler.start("creeps_update")
     for i = #state.creeps, 1, -1 do
         local creep = state.creeps[i]
         creep:update(dt, Grid, state.flowField)
@@ -379,6 +551,8 @@ function Game.update(dt)
         -- Create cadaver immediately when death animation completes
         if creep.dead and not creep.cadaverCreated and not creep.reachedBase then
             creep.cadaverCreated = true
+            -- Spiders use bodyPixels, standard creeps use pixels
+            local pixelData = creep.pixels or creep.bodyPixels
             table.insert(state.cadavers, {
                 x = creep.x,
                 y = creep.y,
@@ -386,7 +560,7 @@ function Game.update(dt)
                 seed = creep.seed,
                 time = creep.time,
                 pixelSize = creep.pixelSize,
-                pixels = creep.pixels,
+                pixels = pixelData,
                 fadeTimer = 0,
             })
         end
@@ -395,6 +569,7 @@ function Game.update(dt)
             table.remove(state.creeps, i)
         end
     end
+    Profiler.stop("creeps_update")
 
     -- Update cadavers (fade out and remove expired ones)
     local realDt = math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME)
@@ -424,6 +599,25 @@ function Game.update(dt)
     -- Update UI
     Panel.update(mx, my)
 
+    -- Track hovered tower (only when not placing a tower)
+    local towerSelectedForPlacement = Panel.getSelectedTower() ~= nil
+
+    -- Clear previous hover state
+    if state.hoveredTower then
+        state.hoveredTower.isHovered = false
+    end
+
+    if not towerSelectedForPlacement and mx < Grid.getPlayAreaWidth() then
+        state.hoveredTower = _findTowerAt(mx, my)
+    else
+        state.hoveredTower = nil
+    end
+
+    -- Set new hover state
+    if state.hoveredTower then
+        state.hoveredTower.isHovered = true
+    end
+
     -- Update cursor based on hover state
     local isClickable = false
 
@@ -437,7 +631,7 @@ function Game.update(dt)
     elseif state.void and state.void:isPointInside(mx, my) then
         isClickable = true
     -- Check if hovering over a placed tower
-    elseif _findTowerAt(mx, my) then
+    elseif state.hoveredTower then
         isClickable = true
     end
 
@@ -446,6 +640,9 @@ function Game.update(dt)
     else
         Cursor.setCursor(Cursor.ARROW)
     end
+
+    -- End frame for profiler (report timing data)
+    Profiler.endFrame(love.timer.getDelta())
 end
 
 function Game.draw()
@@ -466,10 +663,14 @@ function Game.draw()
     love.graphics.scale(scale, scale)
 
     -- Draw procedural background first
+    Profiler.start("background_draw")
     Background.draw()
+    Profiler.stop("background_draw")
 
     -- Draw atmospheric fog/dust particles (behind game elements)
+    Profiler.start("atmosphere_draw")
     Atmosphere.drawParticles()
+    Profiler.stop("atmosphere_draw")
 
     -- Get mouse position in game coordinates
     local screenMx, screenMy = love.mouse.getPosition()
@@ -483,11 +684,13 @@ function Game.draw()
     Grid.draw(showGridOverlay)
 
     -- Draw Void (behind towers and creeps)
+    Profiler.start("void_draw")
     if state.void then
         state.void:draw()
         state.void:drawTears()  -- Draw spawn tears on top of void base
         state.void:drawSpawnParticles()  -- Draw spark particles
     end
+    Profiler.stop("void_draw")
 
     -- Draw Exit Portal (behind towers and creeps, at base zone)
     if state.exitPortal then
@@ -495,40 +698,64 @@ function Game.draw()
     end
 
     -- Draw cadavers (dead creep remains on floor, behind everything else)
+    Profiler.start("cadavers_draw")
     for _, cadaver in ipairs(state.cadavers) do
         _drawCadaver(cadaver)
     end
+    Profiler.stop("cadavers_draw")
 
-    -- Draw ground effects (poison clouds, burning ground) behind towers and creeps
-    for _, effect in ipairs(state.groundEffects) do
-        effect:draw()
-    end
-
-    -- Draw entities
-    for _, tower in ipairs(state.towers) do
-        tower:draw()
-    end
-
-    -- Draw selection highlight on selected tower
+    -- Draw range ellipse for selected tower FIRST (behind everything)
     if state.selectedTower then
         local t = state.selectedTower
-        local selColor = Config.COLORS.upgrade.selected
-        love.graphics.setColor(selColor[1], selColor[2], selColor[3], selColor[4])
-        love.graphics.circle("fill", t.x, t.y, Config.TOWER_SIZE + 4)
-
-        -- Draw range circle for selected tower (transparent white)
         if t.range and t.range > 0 then
-            love.graphics.setColor(1, 1, 1, Config.UI.rangePreview.fillAlpha)
-            love.graphics.circle("fill", t.x, t.y, t.range)
-            love.graphics.setColor(1, 1, 1, Config.UI.rangePreview.strokeAlpha)
-            love.graphics.setLineWidth(Config.UI.rangePreview.strokeWidth)
-            love.graphics.circle("line", t.x, t.y, t.range)
+            love.graphics.setColor(1, 1, 1, 0.05)
+            love.graphics.ellipse("fill", t.x, t.y, t.range, t.range * 0.9)
         end
     end
 
-    for _, creep in ipairs(state.creeps) do
-        creep:draw()
+    -- Draw all game entities sorted by Y for proper depth layering
+    -- Entities with lower Y (further back) are drawn first, higher Y (closer) drawn on top
+    -- Includes: ground effects, blackholes, towers, and creeps
+    Profiler.start("entities_draw")
+
+    -- Update tower Y-sort cache if needed (towers don't move, so cache is stable)
+    if state.towersSortDirty then
+        state.towersSortedByY = {}
+        for _, tower in ipairs(state.towers) do
+            table.insert(state.towersSortedByY, tower)
+        end
+        table.sort(state.towersSortedByY, function(a, b) return a.y < b.y end)
+        state.towersSortDirty = false
     end
+
+    local sortedEntities = {}
+
+    -- Add ground effects (poison clouds, burning ground)
+    for _, effect in ipairs(state.groundEffects) do
+        table.insert(sortedEntities, { entity = effect, y = effect.y, type = "ground_effect" })
+    end
+
+    -- Add blackholes
+    for _, hole in ipairs(state.blackholes) do
+        table.insert(sortedEntities, { entity = hole, y = hole.y, type = "blackhole" })
+    end
+
+    -- Add pre-sorted towers
+    for _, tower in ipairs(state.towersSortedByY) do
+        table.insert(sortedEntities, { entity = tower, y = tower.y, type = "tower" })
+    end
+
+    -- Add creeps
+    for _, creep in ipairs(state.creeps) do
+        table.insert(sortedEntities, { entity = creep, y = creep.y, type = "creep" })
+    end
+
+    table.sort(sortedEntities, function(a, b) return a.y < b.y end)
+
+    for _, item in ipairs(sortedEntities) do
+        item.entity:draw()
+    end
+    Profiler.stop("entities_draw")
 
     -- Draw Exit Portal particles and breach effects (on top of creeps)
     if state.exitPortal then
@@ -538,6 +765,32 @@ function Game.draw()
 
     for _, proj in ipairs(state.projectiles) do
         proj:draw()
+    end
+
+    -- Draw lobbed projectiles (arc high above)
+    for _, proj in ipairs(state.lobbedProjectiles) do
+        proj:draw()
+    end
+
+    -- Draw lightning projectiles
+    for _, proj in ipairs(state.lightningProjectiles) do
+        proj:draw()
+    end
+
+    -- Draw explosion bursts
+    for _, burst in ipairs(state.explosionBursts) do
+        local colors = Config.GROUND_EFFECTS.burning_ground.colors
+        for _, p in ipairs(burst.particles) do
+            if p.life > 0 then
+                local alpha = p.life / p.maxLife
+                -- Glow
+                love.graphics.setColor(colors.edge[1], colors.edge[2] * 0.7, colors.edge[3] * 0.3, alpha * 0.5)
+                love.graphics.circle("fill", p.x, p.y, p.size * 2)
+                -- Core
+                love.graphics.setColor(p.r, p.g, p.b, alpha)
+                love.graphics.rectangle("fill", p.x - p.size/2, p.y - p.size/2, p.size, p.size)
+            end
+        end
     end
 
     -- Draw chain lightning effects on top
@@ -556,6 +809,7 @@ function Game.draw()
     end
 
     -- Pre-lighting glow pass: soft halos that survive the multiply pass
+    Profiler.start("glow_pass")
     if Settings.isLightingEnabled() then
         love.graphics.setBlendMode("add")
 
@@ -584,10 +838,13 @@ function Game.draw()
 
         love.graphics.setBlendMode("alpha")
     end
+    Profiler.stop("glow_pass")
 
     -- Apply lighting overlay (before vignette, after all game elements)
+    Profiler.start("lighting_render")
     Lighting.render(state.towers, state.creeps, state.projectiles, state.void, state.groundEffects, state.chainLightnings)
     Lighting.apply()
+    Profiler.stop("lighting_render")
 
     -- Draw vignette overlay (atmospheric darkening at edges)
     Atmosphere.drawVignette()
@@ -596,7 +853,9 @@ function Game.draw()
     Lighting.drawIndicator()
 
     -- Draw UI (panel now contains all stats, void info, towers, upgrades)
+    Profiler.start("panel_draw")
     Panel.draw(Economy, state.void, Waves, Game.getSpeedLabel())
+    Profiler.stop("panel_draw")
     -- HUD is no longer needed - stats are in panel
 
     -- Draw tooltip on top
@@ -615,14 +874,59 @@ function Game.draw()
     Shortcuts.draw()
     love.graphics.pop()
 
+    -- Draw performance stats (top left, screen space)
+    local fps = love.timer.getFPS()
+    local stats = love.graphics.getStats()
+    local memKB = collectgarbage("count")
+
+    -- Count entities
+    local creepCount = #state.creeps
+    local towerCount = #state.towers
+    local projCount = #state.projectiles + #state.lobbedProjectiles + #state.lightningProjectiles
+    local effectCount = #state.groundEffects + #state.blackholes + #state.chainLightnings + #state.explosionBursts
+    local cadaverCount = #state.cadavers
+
+    -- Build stats text
+    local lines = {
+        string.format("FPS: %d", fps),
+        string.format("Draw: %d", stats.drawcalls),
+        string.format("Mem: %.1fMB", memKB / 1024),
+        string.format("Creeps: %d", creepCount),
+        string.format("Towers: %d", towerCount),
+        string.format("Proj: %d", projCount),
+        string.format("Effects: %d", effectCount),
+        string.format("Cadavers: %d", cadaverCount),
+    }
+
+    love.graphics.setFont(Fonts.get("small"))
+    local lineHeight = 12
+    local panelWidth = 76
+    local panelHeight = #lines * lineHeight + 8
+
+    -- Background
+    love.graphics.setColor(0, 0, 0, 0.6)
+    love.graphics.rectangle("fill", 4, 4, panelWidth, panelHeight)
+
+    -- Text
+    love.graphics.setColor(1, 1, 1, 0.9)
+    for i, line in ipairs(lines) do
+        love.graphics.print(line, 8, 4 + (i - 1) * lineHeight + 2)
+    end
+
     -- Draw custom cursor (always on top, in screen space)
     Cursor.draw()
 end
 
 -- Select/deselect a tower
 local function _selectTower(tower)
+    -- Clear previous selection state
+    if state.selectedTower then
+        state.selectedTower.isSelected = false
+    end
+
     if tower then
         state.selectedTower = tower
+        tower.isSelected = true
         Tooltip.show(tower)
         EventBus.emit("tower_selected", { tower = tower })
     else
@@ -630,6 +934,45 @@ local function _selectTower(tower)
         Tooltip.hide()
         EventBus.emit("tower_selection_cleared", {})
     end
+end
+
+-- Sell a tower and refund gold
+local function _sellTower(tower)
+    if not tower then return end
+
+    local refund = tower:getSellValue()
+
+    -- Clear selection first
+    _selectTower(nil)
+
+    -- Clear hovered state if this was the hovered tower
+    if state.hoveredTower == tower then
+        state.hoveredTower = nil
+    end
+
+    -- Remove tower from grid
+    Grid.clearCell(tower.gridX, tower.gridY)
+
+    -- Remove tower from towers list
+    for i = #state.towers, 1, -1 do
+        if state.towers[i] == tower then
+            table.remove(state.towers, i)
+            state.towersSortDirty = true
+            break
+        end
+    end
+
+    -- Mark tower as dead
+    tower.dead = true
+
+    -- Refund gold
+    Economy.addGold(refund)
+
+    -- Recompute pathfinding
+    state.flowField = Pathfinding.computeFlowField(Grid)
+
+    -- Emit event
+    EventBus.emit("tower_sold", { tower = tower, refund = refund })
 end
 
 -- Attempt to place a tower at grid position
@@ -643,6 +986,7 @@ local function _tryPlaceTower(gridX, gridY)
 
         if Grid.placeTower(gridX, gridY, tower) then
             table.insert(state.towers, tower)
+            state.towersSortDirty = true
             Economy.spendGold(cost)
             EventBus.emit("tower_placed", { tower = tower, gridX = gridX, gridY = gridY })
             return true
@@ -666,18 +1010,24 @@ function Game.mousepressed(screenX, screenY, button)
     -- Priority 1: Tooltip clicks (if visible)
     if Tooltip.isPointInside(x, y) then
         local result = Tooltip.handleClick(x, y, Economy)
-        if result and result.action == "upgrade" then
+        if result then
             local tower = state.selectedTower
-            if tower and Economy.spendGold(result.cost) then
-                tower:upgrade(result.stat)
-                EventBus.emit("tower_upgraded", {
-                    tower = tower,
-                    stat = result.stat,
-                    newLevel = tower.upgrades[result.stat],
-                    cost = result.cost,
-                })
-                -- Refresh tooltip position in case range changed
-                Tooltip.show(tower)
+            if result.action == "upgrade" then
+                if tower and Economy.spendGold(result.cost) then
+                    tower:upgrade()
+                    EventBus.emit("tower_upgraded", {
+                        tower = tower,
+                        newLevel = tower.level,
+                        cost = result.cost,
+                    })
+                    -- Refresh tooltip position in case range changed
+                    Tooltip.show(tower)
+                end
+            elseif result.action == "sell" then
+                if tower then
+                    -- Sell the tower
+                    _sellTower(tower)
+                end
             end
         end
         return
@@ -813,12 +1163,11 @@ function Game.keypressed(key)
 
     -- Tower selection
     local towerKeys = {
-        ["1"] = "wall",
-        ["2"] = "void_orb",
-        ["3"] = "void_ring",
-        ["4"] = "void_bolt",
-        ["5"] = "void_eye",
-        ["6"] = "void_star",
+        ["1"] = "void_orb",
+        ["2"] = "void_ring",
+        ["3"] = "void_bolt",
+        ["4"] = "void_eye",
+        ["5"] = "void_star",
     }
     if towerKeys[key] then
         Panel.selectTower(towerKeys[key])

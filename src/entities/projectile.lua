@@ -3,6 +3,7 @@
 
 local Object = require("lib.classic")
 local Config = require("src.config")
+local Combat = require("src.systems.combat")
 local PixelArt = require("src.rendering.pixel_art")
 local EventBus = require("src.core.event_bus")
 
@@ -19,7 +20,7 @@ end
 
 local Projectile = Object:extend()
 
-function Projectile:new(x, y, angle, speed, damage, color, splashRadius, towerType)
+function Projectile:new(x, y, angle, speed, damage, color, splashRadius, towerType, sourceTower)
     self.x = x
     self.y = y
     self.angle = angle
@@ -28,6 +29,7 @@ function Projectile:new(x, y, angle, speed, damage, color, splashRadius, towerTy
     self.color = color
     self.splashRadius = splashRadius
     self.towerType = towerType
+    self.sourceTower = sourceTower  -- Reference to tower that fired this projectile
 
     self.vx = math.cos(angle) * speed
     self.vy = math.sin(angle) * speed
@@ -46,8 +48,12 @@ function Projectile:update(dt, creeps, groundEffects, chainLightnings)
         return
     end
 
-    -- Collision detection with creeps
-    for _, creep in ipairs(creeps) do
+    -- Collision detection with creeps (using spatial hash for efficiency)
+    -- Query nearby creeps from spatial hash
+    local maxHitRadius = Config.PROJECTILE_SIZE + 20  -- Approximate max creep size
+    local nearbyCreeps = Combat.findAllInRange(self.x, self.y, maxHitRadius, creeps)
+
+    for _, creep in ipairs(nearbyCreeps) do
         if not creep.dead then
             local dx = creep.x - self.x
             local dy = creep.y - self.y
@@ -57,25 +63,32 @@ function Projectile:update(dt, creeps, groundEffects, chainLightnings)
             if dist < hitRadius then
                 -- Hit! Apply damage with bullet angle for directional particles
                 if self.splashRadius and self.splashRadius > 0 then
-                    -- Splash damage: full damage at center, falloff with distance
-                    for _, target in ipairs(creeps) do
+                    -- Splash damage: use spatial hash to find targets in splash radius
+                    local splashTargets = Combat.findAllInRange(self.x, self.y, self.splashRadius, creeps)
+                    for _, target in ipairs(splashTargets) do
                         if not target.dead then
                             local tx = target.x - self.x
                             local ty = target.y - self.y
                             local targetDist = math.sqrt(tx * tx + ty * ty)
 
-                            if targetDist < self.splashRadius then
-                                -- Linear falloff from center
-                                local falloff = 1 - (targetDist / self.splashRadius)
-                                local splashDamage = self.damage * falloff
-                                target:takeDamage(splashDamage, self.angle)
-                                EventBus.emit("creep_hit", { creep = target, damage = splashDamage, position = { x = target.x, y = target.y }, angle = self.angle })
+                            -- Linear falloff from center
+                            local falloff = 1 - (targetDist / self.splashRadius)
+                            local splashDamage = self.damage * falloff
+                            target:takeDamage(splashDamage, self.angle)
+                            -- Mark the creep with the source tower for kill attribution
+                            if self.sourceTower then
+                                target.killedBy = self.sourceTower
                             end
+                            EventBus.emit("creep_hit", { creep = target, damage = splashDamage, position = { x = target.x, y = target.y }, angle = self.angle })
                         end
                     end
                 else
                     -- Single target damage with bullet direction
                     creep:takeDamage(self.damage, self.angle)
+                    -- Mark the creep with the source tower for kill attribution
+                    if self.sourceTower then
+                        creep.killedBy = self.sourceTower
+                    end
                     EventBus.emit("creep_hit", { creep = creep, damage = self.damage, position = { x = creep.x, y = creep.y }, angle = self.angle })
                 end
 

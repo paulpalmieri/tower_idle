@@ -6,9 +6,6 @@ local Procedural = require("src.rendering.procedural")
 
 local GroundEffects = {}
 
--- Perspective scale for ground effects (0.9 = 10% Y compression for subtle depth)
-local PERSPECTIVE_Y_SCALE = 0.9
-
 -- Draw a poison cloud effect
 -- @param x, y: Center position
 -- @param radius: Effect radius
@@ -23,6 +20,10 @@ function GroundEffects.drawPoisonCloud(x, y, radius, progress, time, seed)
     -- Alpha fade based on remaining life
     local alpha = progress
 
+    -- OPTIMIZATION: Pre-compute time-based values
+    local timeOffset = time * cfg.wobbleSpeed
+    local seedOffset = seed * 0.1
+
     -- Generate pixel grid for the cloud (expanded for perspective)
     local gridSize = math.ceil(radius * 2 / ps)
     local halfGrid = gridSize / 2
@@ -32,30 +33,28 @@ function GroundEffects.drawPoisonCloud(x, y, radius, progress, time, seed)
             local relX = (px - halfGrid + 0.5) * ps
             local relY = (py - halfGrid + 0.5) * ps
             -- Use elliptical distance for perspective (scale Y for distance calc)
-            local dist = math.sqrt(relX * relX + (relY / PERSPECTIVE_Y_SCALE) * (relY / PERSPECTIVE_Y_SCALE))
-            local angle = math.atan2(relY / PERSPECTIVE_Y_SCALE, relX)
+            local dist = math.sqrt(relX * relX + (relY / Config.GROUND_EFFECTS.perspectiveYScale) * (relY / Config.GROUND_EFFECTS.perspectiveYScale))
+            local angle = math.atan2(relY / Config.GROUND_EFFECTS.perspectiveYScale, relX)
 
             -- Skip pixels outside radius
             if dist > radius then
                 goto continue
             end
 
-            -- Animated boundary wobble
-            local wobbleNoise = Procedural.fbm(
-                angle * 3 + time * cfg.wobbleSpeed,
-                time * cfg.wobbleSpeed * 0.5,
-                seed,
-                2
-            )
+            -- OPTIMIZATION: Replace fbm with cheap sin-based wobble
+            local wobbleNoise = math.sin(angle * 3 + timeOffset + seedOffset) * 0.3 +
+                                math.sin(angle * 5 - timeOffset * 0.7) * 0.15
             local edgeRadius = radius * (0.8 + wobbleNoise * cfg.wobbleAmount)
 
             if dist > edgeRadius then
                 goto continue
             end
 
-            -- Noise for swirling effect
-            local n1 = Procedural.fbm(px * 0.2 + time * 0.5, py * 0.2 + time * 0.3, seed, 3)
-            local n2 = Procedural.smoothNoise(px * 0.3 - time * 0.4, py * 0.3 + time * 0.2, seed + 50)
+            -- OPTIMIZATION: Replace fbm/smoothNoise with simple sin-based noise
+            local n1 = math.sin(px * 0.4 + time * 0.5 + seedOffset) * 0.5 +
+                       math.sin(py * 0.3 + time * 0.3) * 0.5
+            local n2 = math.sin(px * 0.5 - time * 0.4) * 0.5 +
+                       math.sin(py * 0.5 + time * 0.2 + seedOffset) * 0.5
 
             -- Distance from center (normalized)
             local distNorm = dist / radius
@@ -87,7 +86,7 @@ function GroundEffects.drawPoisonCloud(x, y, radius, progress, time, seed)
 
             -- Draw pixel (apply perspective compression to Y)
             local screenX = x + relX - ps / 2
-            local screenY = y + relY * PERSPECTIVE_Y_SCALE - ps / 2
+            local screenY = y + relY * Config.GROUND_EFFECTS.perspectiveYScale - ps / 2
             love.graphics.setColor(r, g, b, a)
             love.graphics.rectangle("fill", screenX, screenY, ps, ps)
 
@@ -110,6 +109,11 @@ function GroundEffects.drawBurningGround(x, y, radius, progress, time, seed)
     -- Alpha fade based on remaining life
     local alpha = progress
 
+    -- OPTIMIZATION: Pre-compute time-based values
+    local flickerTime = time * cfg.flickerSpeed
+    local seedOffset = seed * 0.1
+    local flickerTimeInt = math.floor(flickerTime)
+
     -- Generate pixel grid for the fire
     local gridSize = math.ceil(radius * 2 / ps)
     local halfGrid = gridSize / 2
@@ -119,30 +123,28 @@ function GroundEffects.drawBurningGround(x, y, radius, progress, time, seed)
             local relX = (px - halfGrid + 0.5) * ps
             local relY = (py - halfGrid + 0.5) * ps
             -- Use elliptical distance for perspective (scale Y for distance calc)
-            local dist = math.sqrt(relX * relX + (relY / PERSPECTIVE_Y_SCALE) * (relY / PERSPECTIVE_Y_SCALE))
-            local angle = math.atan2(relY / PERSPECTIVE_Y_SCALE, relX)
+            local dist = math.sqrt(relX * relX + (relY / Config.GROUND_EFFECTS.perspectiveYScale) * (relY / Config.GROUND_EFFECTS.perspectiveYScale))
+            local angle = math.atan2(relY / Config.GROUND_EFFECTS.perspectiveYScale, relX)
 
             -- Skip pixels outside radius
             if dist > radius then
                 goto continue
             end
 
-            -- Animated flickering boundary
-            local flickerNoise = Procedural.fbm(
-                angle * 4 + time * cfg.flickerSpeed,
-                time * cfg.flickerSpeed * 0.7,
-                seed,
-                2
-            )
+            -- OPTIMIZATION: Replace fbm with cheap sin-based flicker
+            local flickerNoise = math.sin(angle * 4 + flickerTime + seedOffset) * 0.25 +
+                                 math.sin(angle * 7 - flickerTime * 0.7) * 0.15
             local edgeRadius = radius * (0.7 + flickerNoise * 0.4)
 
             if dist > edgeRadius then
                 goto continue
             end
 
-            -- Noise for fire animation
-            local n1 = Procedural.fbm(px * 0.25 + time * 1.5, py * 0.25 - time * 2.0, seed, 3)
-            local n2 = Procedural.smoothNoise(px * 0.4 + time * 0.8, py * 0.4 - time * 1.5, seed + 100)
+            -- OPTIMIZATION: Replace fbm with simple sin-based noise
+            local n1 = math.sin(px * 0.5 + time * 1.5 + seedOffset) * 0.5 +
+                       math.sin(py * 0.4 - time * 2.0) * 0.5
+            local n2 = math.sin(px * 0.6 + time * 0.8) * 0.5 +
+                       math.sin(py * 0.6 - time * 1.5 + seedOffset) * 0.5
 
             -- Distance from center (normalized)
             local distNorm = dist / radius
@@ -150,8 +152,8 @@ function GroundEffects.drawBurningGround(x, y, radius, progress, time, seed)
             -- Color blend based on distance and noise
             local r, g, b, a
 
-            -- Fire flicker
-            local flicker = Procedural.hash(px + math.floor(time * cfg.flickerSpeed), py + math.floor(time * 3), seed + 200)
+            -- OPTIMIZATION: Replace hash with simple sin-based flicker
+            local flicker = (math.sin((px + flickerTimeInt) * 12.9898 + (py + math.floor(time * 3)) * 78.233 + seedOffset) * 0.5 + 0.5)
 
             if distNorm > 0.6 then
                 -- Edge: bright orange flames
@@ -177,7 +179,7 @@ function GroundEffects.drawBurningGround(x, y, radius, progress, time, seed)
 
             -- Draw pixel (apply perspective compression to Y)
             local screenX = x + relX - ps / 2
-            local screenY = y + relY * PERSPECTIVE_Y_SCALE - ps / 2
+            local screenY = y + relY * Config.GROUND_EFFECTS.perspectiveYScale - ps / 2
             love.graphics.setColor(r, g, b, a)
             love.graphics.rectangle("fill", screenX, screenY, ps, ps)
 
@@ -345,6 +347,55 @@ function GroundEffects.drawSlowAura(x, y, radius, time)
     end
 
     love.graphics.setLineWidth(1)
+end
+
+-- Draw drip effect from tower to target (for void_orb)
+-- @param x1, y1: Tower position
+-- @param x2, y2: Target position
+-- @param progress: Drip progress (0 = start, 1 = reached target)
+function GroundEffects.drawDripEffect(x1, y1, x2, y2, progress)
+    local cfg = Config.TOWER_ATTACKS.void_orb
+    local colors = Config.GROUND_EFFECTS.poison_cloud.colors
+    local ps = 3  -- Pixel size
+
+    -- Calculate drip head position along curved path
+    local dx = x2 - x1
+    local dy = y2 - y1
+    local dist = math.sqrt(dx * dx + dy * dy)
+
+    -- Slight curve with sag
+    local sagAmount = dist * 0.1
+    local midX = (x1 + x2) / 2
+    local midY = (y1 + y2) / 2 + sagAmount
+
+    -- Calculate position along quadratic bezier
+    local t = progress
+    local oneMinusT = 1 - t
+    local headX = oneMinusT * oneMinusT * x1 + 2 * oneMinusT * t * midX + t * t * x2
+    local headY = oneMinusT * oneMinusT * y1 + 2 * oneMinusT * t * midY + t * t * y2
+
+    -- Draw pixel trail segments
+    local segments = cfg.dripSegments or 4
+    local segmentSpacing = 0.15
+
+    for i = 0, segments - 1 do
+        local segT = progress - i * segmentSpacing
+        if segT > 0 and segT <= 1 then
+            local segOneMinusT = 1 - segT
+            local segX = segOneMinusT * segOneMinusT * x1 + 2 * segOneMinusT * segT * midX + segT * segT * x2
+            local segY = segOneMinusT * segOneMinusT * y1 + 2 * segOneMinusT * segT * midY + segT * segT * y2
+
+            local alpha = (1 - i / segments) * 0.7
+            love.graphics.setColor(colors.mid[1], colors.mid[2], colors.mid[3], alpha)
+            love.graphics.rectangle("fill", segX - ps/2, segY - ps/2, ps, ps)
+        end
+    end
+
+    -- Draw drip head (brightest pixel)
+    if progress > 0 and progress <= 1 then
+        love.graphics.setColor(colors.edge[1], colors.edge[2], colors.edge[3], 0.9)
+        love.graphics.rectangle("fill", headX - ps, headY - ps, ps * 2, ps * 2)
+    end
 end
 
 return GroundEffects

@@ -22,12 +22,11 @@ local state = {
 -- =============================================================================
 local SHORTCUTS = {
     { category = "TOWERS" },
-    { key = "1", description = "Select Wall" },
-    { key = "2", description = "Select Void Orb" },
-    { key = "3", description = "Select Void Ring" },
-    { key = "4", description = "Select Void Bolt" },
-    { key = "5", description = "Select Void Eye" },
-    { key = "6", description = "Select Void Star" },
+    { key = "1", description = "Select Void Orb" },
+    { key = "2", description = "Select Void Ring" },
+    { key = "3", description = "Select Void Bolt" },
+    { key = "4", description = "Select Void Eye" },
+    { key = "5", description = "Select Void Star" },
 
     { category = "UPGRADES" },
     { key = "Q", description = "Buy Auto-Clicker" },

@@ -3,6 +3,7 @@
 
 local Object = require("lib.classic")
 local Config = require("src.config")
+local MathUtils = require("src.core.math_utils")
 local Projectile = require("src.entities.projectile")
 local Combat = require("src.systems.combat")
 local PixelArt = require("src.rendering.pixel_art")
@@ -10,6 +11,18 @@ local TurretConcepts = require("src.rendering.turret_concepts")
 local EventBus = require("src.core.event_bus")
 local StatusEffects = require("src.systems.status_effects")
 local GroundEffects = require("src.rendering.ground_effects")
+
+-- Lazy-load new entity classes to avoid circular requires
+local LobbedProjectile, Blackhole, LightningProjectile, PoisonCloud
+
+local function loadNewEntityClasses()
+    if not LobbedProjectile then
+        LobbedProjectile = require("src.entities.lobbed_projectile")
+        Blackhole = require("src.entities.blackhole")
+        LightningProjectile = require("src.entities.lightning_projectile")
+        PoisonCloud = require("src.entities.poison_cloud")
+    end
+end
 
 local Tower = Object:extend()
 
@@ -19,6 +32,12 @@ Tower.STATE_TARGETING = "targeting"
 Tower.STATE_CHARGING = "charging"
 Tower.STATE_FIRING = "firing"
 Tower.STATE_COOLDOWN = "cooldown"
+Tower.STATE_BUILDING = "building"
+-- New states for drip attack (void_orb)
+Tower.STATE_GLOWING = "glowing"
+Tower.STATE_DRIPPING = "dripping"
+-- New states for piercing bolt (void_ring)
+Tower.STATE_WINDUP = "windup"
 
 function Tower:new(x, y, towerType, gridX, gridY)
     self.x = x
@@ -36,9 +55,13 @@ function Tower:new(x, y, towerType, gridX, gridY)
     self.splashRadius = stats.splashRadius
     self.rotationSpeed = stats.rotationSpeed or 10
 
-    -- Upgrade tracking
-    self.upgrades = { range = 0, fireRate = 0, damage = 0 }
+    -- Upgrade tracking (unified level system)
+    self.level = 1
+    self.goldInvested = stats.cost  -- Track total gold invested for sell refund
     self:recalculateStats()
+
+    -- Kill tracking
+    self.kills = 0
 
     self.cooldown = 0
     self.target = nil
@@ -63,8 +86,13 @@ function Tower:new(x, y, towerType, gridX, gridY)
     self.voidTime = 0
     self.voidSeed = gridX * 1000 + gridY * 37 + math.random(1000)
 
-    -- Attack state machine
-    self.attackState = Tower.STATE_IDLE
+    -- Build state (towers start building)
+    self.buildTimer = Config.TOWER_BUILD.duration
+    self.buildProgress = 0
+    self.buildParticles = {}  -- Particles for build animation
+
+    -- Attack state machine (starts in building state)
+    self.attackState = Tower.STATE_BUILDING
     self.chargeTimer = 0
     self.beamTimer = 0
     self.beamTarget = nil  -- Stores target for beam attack
@@ -72,46 +100,109 @@ function Tower:new(x, y, towerType, gridX, gridY)
     -- Get attack type from config
     local attackCfg = Config.TOWER_ATTACKS[towerType]
     self.attackType = attackCfg and attackCfg.type or "projectile"
+
+    -- Drip attack state (void_orb)
+    self.glowTimer = 0
+    self.dripTimer = 0
+    self.dripTarget = nil
+    self.dripTargetPos = nil  -- Last known position if target dies
+    self.glowIntensity = 0
+
+    -- Piercing bolt attack state (void_ring)
+    self.windupTimer = 0
+    self.windupSpinSpeed = 0
+    self.baseSpinSpeed = 0.5  -- Idle spin speed
+
+    -- Blackhole attack state (void_eye)
+    self.blackholeTarget = nil
 end
 
 function Tower:recalculateStats()
     local bonuses = Config.UPGRADES.bonusPerLevel
-    self.damage = self.baseDamage * (1 + self.upgrades.damage * bonuses.damage)
-    self.range = self.baseRange * (1 + self.upgrades.range * bonuses.range)
-    self.fireRate = self.baseFireRate * (1 + self.upgrades.fireRate * bonuses.fireRate)
+    local levelBonus = self.level - 1  -- Level 1 = no bonus, level 5 = +4 levels of bonus
+    self.damage = self.baseDamage * (1 + levelBonus * bonuses.damage)
+    self.range = self.baseRange * (1 + levelBonus * bonuses.range)
+    self.fireRate = self.baseFireRate * (1 + levelBonus * bonuses.fireRate)
 end
 
-function Tower:getUpgradeCost(stat)
-    local level = self.upgrades[stat]
-    if level >= Config.UPGRADES.maxLevel then
+function Tower:getUpgradeCost()
+    if self.level >= Config.UPGRADES.maxLevel then
         return nil  -- Maxed out
     end
-    local baseCost = Config.UPGRADES.baseCost[stat]
-    return math.floor(baseCost * (Config.UPGRADES.costMultiplier ^ level))
+    local baseCost = Config.UPGRADES.baseCost
+    -- Cost for upgrading from current level to next level
+    return math.floor(baseCost * (Config.UPGRADES.costMultiplier ^ (self.level - 1)))
 end
 
-function Tower:canUpgrade(stat)
-    return self.upgrades[stat] < Config.UPGRADES.maxLevel
+function Tower:canUpgrade()
+    return self.level < Config.UPGRADES.maxLevel
 end
 
-function Tower:upgrade(stat)
-    if not self:canUpgrade(stat) then
+function Tower:upgrade()
+    if not self:canUpgrade() then
         return false
     end
-    self.upgrades[stat] = self.upgrades[stat] + 1
+    local cost = self:getUpgradeCost()
+    self.level = self.level + 1
+    self.goldInvested = self.goldInvested + cost
     self:recalculateStats()
     return true
 end
 
-function Tower:getTotalUpgradeLevel()
-    return self.upgrades.damage + self.upgrades.range + self.upgrades.fireRate
+function Tower:getLevel()
+    return self.level
+end
+
+function Tower:recordKill()
+    self.kills = self.kills + 1
+end
+
+function Tower:getSellValue()
+    return math.floor(self.goldInvested * Config.TOWER_SELL_REFUND)
 end
 
 function Tower:update(dt, creeps, projectiles, groundEffects, chainLightnings)
     -- Update void animation time (all towers)
     self.voidTime = self.voidTime + dt
 
-    -- Non-attacking towers (walls) skip combat logic
+    -- Handle building phase
+    if self.attackState == Tower.STATE_BUILDING then
+        self.buildTimer = self.buildTimer - dt
+        self.buildProgress = 1 - (self.buildTimer / Config.TOWER_BUILD.duration)
+        self.buildProgress = math.max(0, math.min(1, self.buildProgress))
+
+        -- Update build particles
+        for i = #self.buildParticles, 1, -1 do
+            local p = self.buildParticles[i]
+            p.life = p.life - dt
+            if p.life <= 0 then
+                table.remove(self.buildParticles, i)
+            else
+                p.x = p.x + p.vx * dt
+                p.y = p.y + p.vy * dt
+                -- Apply gravity toward target if set
+                if p.targetX and p.targetY then
+                    local dx = p.targetX - p.x
+                    local dy = p.targetY - p.y
+                    local dist = math.sqrt(dx * dx + dy * dy)
+                    if dist > 1 then
+                        local pull = p.gravity or 150
+                        p.vx = p.vx + (dx / dist) * pull * dt
+                        p.vy = p.vy + (dy / dist) * pull * dt
+                    end
+                end
+            end
+        end
+
+        if self.buildTimer <= 0 then
+            self.attackState = Tower.STATE_IDLE
+            self.buildProgress = 1
+            self.buildParticles = {}  -- Clear particles when done
+        end
+        return  -- Skip combat logic while building
+    end
+
+    -- Non-attacking towers skip combat logic
     if not self.fireRate or self.fireRate == 0 then
         return
     end
@@ -150,6 +241,14 @@ function Tower:update(dt, creeps, projectiles, groundEffects, chainLightnings)
         self:updateAuraAttack(dt, creeps)
     elseif self.attackType == "beam" then
         self:updateBeamAttack(dt, creeps)
+    elseif self.attackType == "drip" then
+        self:updateDripAttack(dt, creeps, groundEffects)
+    elseif self.attackType == "piercing_bolt" then
+        self:updatePiercingBoltAttack(dt, creeps)
+    elseif self.attackType == "blackhole" then
+        self:updateBlackholeAttack(dt, creeps)
+    elseif self.attackType == "lobbed" then
+        self:updateLobbedAttack(dt, creeps, projectiles)
     else
         self:updateProjectileAttack(dt, creeps, projectiles)
     end
@@ -158,15 +257,16 @@ end
 -- Aura attack: constant slow to all creeps in range (void_ring)
 function Tower:updateAuraAttack(dt, creeps)
     local attackCfg = Config.TOWER_ATTACKS.void_ring
+    local rangeSq = self.range * self.range
 
-    -- Find all creeps in range and apply slow
+    -- Find all creeps in range and apply slow (using squared distance)
     for _, creep in ipairs(creeps) do
         if not creep.dead and not creep.dying then
             local dx = creep.x - self.x
             local dy = creep.y - self.y
-            local dist = math.sqrt(dx * dx + dy * dy)
+            local distSq = dx * dx + dy * dy
 
-            if dist <= self.range then
+            if distSq <= rangeSq then
                 -- Apply slow effect
                 StatusEffects.apply(creep, StatusEffects.SLOW, {
                     multiplier = attackCfg.slowMultiplier,
@@ -184,10 +284,7 @@ function Tower:updateAuraAttack(dt, creeps)
         local dx = self.target.x - self.x
         local dy = self.target.y - self.y
         local targetRotation = math.atan2(dy, dx)
-        local rotDiff = targetRotation - self.rotation
-        while rotDiff > math.pi do rotDiff = rotDiff - 2 * math.pi end
-        while rotDiff < -math.pi do rotDiff = rotDiff + 2 * math.pi end
-        self.rotation = self.rotation + rotDiff * math.min(1, dt * self.rotationSpeed * 0.5)
+        self.rotation = MathUtils.lerpAngle(self.rotation, targetRotation, self.rotationSpeed * 0.5, dt)
     else
         -- Slow idle spin
         self.rotation = self.rotation + dt * 0.5
@@ -206,10 +303,7 @@ function Tower:updateBeamAttack(dt, creeps)
         local dx = self.target.x - self.x
         local dy = self.target.y - self.y
         local targetRotation = math.atan2(dy, dx)
-        local rotDiff = targetRotation - self.rotation
-        while rotDiff > math.pi do rotDiff = rotDiff - 2 * math.pi end
-        while rotDiff < -math.pi do rotDiff = rotDiff + 2 * math.pi end
-        self.rotation = self.rotation + rotDiff * math.min(1, dt * self.rotationSpeed)
+        self.rotation = MathUtils.lerpAngle(self.rotation, targetRotation, self.rotationSpeed, dt)
     end
 
     -- State machine for beam attack
@@ -230,12 +324,13 @@ function Tower:updateBeamAttack(dt, creeps)
             return
         end
 
-        -- Check if target moved out of range
+        -- Check if target moved out of range (using squared distance)
         if self.beamTarget then
             local dx = self.beamTarget.x - self.x
             local dy = self.beamTarget.y - self.y
-            local dist = math.sqrt(dx * dx + dy * dy)
-            if dist > self.range * 1.2 then  -- Small grace range
+            local distSq = dx * dx + dy * dy
+            local graceRangeSq = (self.range * 1.2) * (self.range * 1.2)
+            if distSq > graceRangeSq then  -- Small grace range
                 self.attackState = Tower.STATE_IDLE
                 self.beamTarget = nil
                 return
@@ -252,6 +347,8 @@ function Tower:updateBeamAttack(dt, creeps)
             -- Apply damage instantly
             if self.beamTarget and not self.beamTarget.dead then
                 self.beamTarget:takeDamage(self.damage, self.rotation)
+                -- Mark the creep with the source tower for kill attribution
+                self.beamTarget.killedBy = self
                 EventBus.emit("creep_hit", {
                     creep = self.beamTarget,
                     damage = self.damage,
@@ -283,7 +380,7 @@ function Tower:updateBeamAttack(dt, creeps)
     end
 end
 
--- Projectile attack: standard firing behavior (void_orb, void_bolt, void_star)
+-- Projectile attack: standard firing behavior (void_bolt - chain lightning)
 function Tower:updateProjectileAttack(dt, creeps, projectiles)
     -- Find closest non-dead creep within range
     self.target = Combat.findTarget(self, creeps)
@@ -293,12 +390,7 @@ function Tower:updateProjectileAttack(dt, creeps, projectiles)
         local dx = self.target.x - self.x
         local dy = self.target.y - self.y
         local targetRotation = math.atan2(dy, dx)
-
-        -- Smooth rotation using per-tower rotation speed
-        local rotDiff = targetRotation - self.rotation
-        while rotDiff > math.pi do rotDiff = rotDiff - 2 * math.pi end
-        while rotDiff < -math.pi do rotDiff = rotDiff + 2 * math.pi end
-        self.rotation = self.rotation + rotDiff * math.min(1, dt * self.rotationSpeed)
+        self.rotation = MathUtils.lerpAngle(self.rotation, targetRotation, self.rotationSpeed, dt)
     end
 
     -- Fire if cooldown expired and target exists
@@ -311,7 +403,8 @@ function Tower:updateProjectileAttack(dt, creeps, projectiles)
             self.damage,
             self.color,
             self.splashRadius,
-            self.towerType
+            self.towerType,
+            self  -- Pass source tower for kill attribution
         )
         table.insert(projectiles, proj)
         self.cooldown = 1 / self.fireRate
@@ -325,12 +418,255 @@ function Tower:updateProjectileAttack(dt, creeps, projectiles)
     end
 end
 
-function Tower:draw()
-    -- Draw aura effect for void_ring (behind tower)
-    if self.attackType == "aura" then
-        GroundEffects.drawSlowAura(self.x, self.y, self.range, self.voidTime)
+-- Drip attack: glow + drip visual, spawns poison pool at enemy (void_orb)
+function Tower:updateDripAttack(dt, creeps, groundEffects)
+    loadNewEntityClasses()
+    local attackCfg = Config.TOWER_ATTACKS.void_orb
+
+    -- Find target
+    self.target = Combat.findTarget(self, creeps)
+
+    -- Rotate toward target
+    if self.target then
+        local dx = self.target.x - self.x
+        local dy = self.target.y - self.y
+        local targetRotation = math.atan2(dy, dx)
+        self.rotation = MathUtils.lerpAngle(self.rotation, targetRotation, self.rotationSpeed, dt)
     end
 
+    -- State machine: IDLE -> GLOWING -> DRIPPING -> COOLDOWN
+    if self.attackState == Tower.STATE_IDLE then
+        self.glowIntensity = 0
+        if self.target and self.cooldown <= 0 then
+            self.attackState = Tower.STATE_GLOWING
+            self.glowTimer = 0
+            self.dripTarget = self.target
+            self.dripTargetPos = { x = self.target.x, y = self.target.y }
+        end
+
+    elseif self.attackState == Tower.STATE_GLOWING then
+        self.glowTimer = self.glowTimer + dt
+        self.glowIntensity = self.glowTimer / attackCfg.glowDuration
+
+        -- Update target position if still alive
+        if self.dripTarget and not self.dripTarget.dead and not self.dripTarget.dying then
+            self.dripTargetPos = { x = self.dripTarget.x, y = self.dripTarget.y }
+        end
+
+        if self.glowTimer >= attackCfg.glowDuration then
+            -- Start dripping
+            self.attackState = Tower.STATE_DRIPPING
+            self.dripTimer = 0
+            self.glowIntensity = 1
+        end
+
+    elseif self.attackState == Tower.STATE_DRIPPING then
+        self.dripTimer = self.dripTimer + dt
+
+        -- Keep updating target position while dripping
+        if self.dripTarget and not self.dripTarget.dead and not self.dripTarget.dying then
+            self.dripTargetPos = { x = self.dripTarget.x, y = self.dripTarget.y }
+        end
+
+        if self.dripTimer >= attackCfg.dripDuration then
+            -- Drip complete - spawn poison cloud at target position
+            if groundEffects and self.dripTargetPos then
+                local cloud = PoisonCloud(self.dripTargetPos.x, self.dripTargetPos.y)
+                table.insert(groundEffects, cloud)
+            end
+
+            -- Apply direct damage to target if still alive
+            if self.dripTarget and not self.dripTarget.dead and not self.dripTarget.dying then
+                self.dripTarget:takeDamage(self.damage, self.rotation)
+                self.dripTarget.killedBy = self
+                EventBus.emit("creep_hit", {
+                    creep = self.dripTarget,
+                    damage = self.damage,
+                    position = { x = self.dripTarget.x, y = self.dripTarget.y },
+                    angle = self.rotation,
+                })
+            end
+
+            -- Trigger visual feedback
+            self.recoilTimer = self.recoilDuration
+            self.muzzleFlashTimer = 0.1
+            EventBus.emit("tower_fired", { towerType = self.towerType })
+
+            -- Go to cooldown
+            self.attackState = Tower.STATE_COOLDOWN
+            self.cooldown = 1 / self.fireRate
+            self.dripTarget = nil
+            self.glowIntensity = 0
+        end
+
+    elseif self.attackState == Tower.STATE_COOLDOWN then
+        self.glowIntensity = math.max(0, self.glowIntensity - dt * 3)
+        if self.cooldown <= 0 then
+            self.attackState = Tower.STATE_IDLE
+        end
+    end
+end
+
+-- Piercing bolt attack: fast piercing projectile (void_bolt)
+function Tower:updatePiercingBoltAttack(dt, creeps)
+    loadNewEntityClasses()
+    local attackCfg = Config.TOWER_ATTACKS.void_bolt
+
+    -- Find target
+    self.target = Combat.findTarget(self, creeps)
+
+    -- Rotate toward target
+    if self.target then
+        local dx = self.target.x - self.x
+        local dy = self.target.y - self.y
+        local targetRotation = math.atan2(dy, dx)
+        self.rotation = MathUtils.lerpAngle(self.rotation, targetRotation, self.rotationSpeed, dt)
+    end
+
+    -- Fire if cooldown expired and target exists
+    if self.cooldown <= 0 and self.target then
+        -- Calculate angle to target
+        local dx = self.target.x - self.x
+        local dy = self.target.y - self.y
+        local angle = math.atan2(dy, dx)
+
+        -- Spawn piercing bolt
+        EventBus.emit("spawn_lightning_bolt", {
+            x = self.x,
+            y = self.y,
+            angle = angle,
+            damage = self.damage,
+            sourceTower = self,
+        })
+
+        self.cooldown = 1 / self.fireRate
+
+        -- Trigger visual feedback
+        self.recoilTimer = self.recoilDuration
+        self.muzzleFlashTimer = 0.05
+        EventBus.emit("tower_fired", { towerType = self.towerType })
+    end
+end
+
+-- Blackhole attack: charge + spawn blackhole that pulls enemies (void_eye)
+function Tower:updateBlackholeAttack(dt, creeps)
+    loadNewEntityClasses()
+    local attackCfg = Config.TOWER_ATTACKS.void_eye
+
+    -- Find target
+    self.target = Combat.findTarget(self, creeps)
+
+    -- Rotate toward target
+    if self.target then
+        local dx = self.target.x - self.x
+        local dy = self.target.y - self.y
+        local targetRotation = math.atan2(dy, dx)
+        self.rotation = MathUtils.lerpAngle(self.rotation, targetRotation, self.rotationSpeed, dt)
+    end
+
+    -- State machine: IDLE -> CHARGING -> FIRING -> COOLDOWN
+    if self.attackState == Tower.STATE_IDLE then
+        if self.target and self.cooldown <= 0 then
+            self.attackState = Tower.STATE_CHARGING
+            self.chargeTimer = 0
+            self.blackholeTarget = self.target
+        end
+
+    elseif self.attackState == Tower.STATE_CHARGING then
+        self.chargeTimer = self.chargeTimer + dt
+
+        -- Track target position
+        if self.blackholeTarget and (self.blackholeTarget.dead or self.blackholeTarget.dying) then
+            -- Target died, find new one
+            self.blackholeTarget = Combat.findTarget(self, creeps)
+            if not self.blackholeTarget then
+                self.attackState = Tower.STATE_IDLE
+                return
+            end
+        end
+
+        -- Check if target moved out of range (using squared distance)
+        if self.blackholeTarget then
+            local dx = self.blackholeTarget.x - self.x
+            local dy = self.blackholeTarget.y - self.y
+            local distSq = dx * dx + dy * dy
+            local graceRangeSq = (self.range * 1.2) * (self.range * 1.2)
+            if distSq > graceRangeSq then
+                self.attackState = Tower.STATE_IDLE
+                self.blackholeTarget = nil
+                return
+            end
+        end
+
+        if self.chargeTimer >= attackCfg.chargeTime and self.blackholeTarget then
+            -- Spawn blackhole at target location!
+            self.attackState = Tower.STATE_FIRING
+
+            EventBus.emit("spawn_blackhole", {
+                x = self.blackholeTarget.x,
+                y = self.blackholeTarget.y,
+                sourceTower = self,
+            })
+
+            -- No muzzle flash for blackhole - just audio event
+            EventBus.emit("tower_fired", { towerType = self.towerType })
+
+            -- Go to cooldown
+            self.attackState = Tower.STATE_COOLDOWN
+            self.cooldown = 1 / self.fireRate
+            self.blackholeTarget = nil
+        end
+
+    elseif self.attackState == Tower.STATE_FIRING then
+        self.attackState = Tower.STATE_COOLDOWN
+        self.cooldown = 1 / self.fireRate
+
+    elseif self.attackState == Tower.STATE_COOLDOWN then
+        if self.cooldown <= 0 then
+            self.attackState = Tower.STATE_IDLE
+        end
+    end
+end
+
+-- Lobbed attack: parabolic arc bomb + explosion burst (void_star)
+function Tower:updateLobbedAttack(dt, creeps, projectiles)
+    loadNewEntityClasses()
+
+    -- Find target
+    self.target = Combat.findTarget(self, creeps)
+
+    -- Rotate toward target
+    if self.target then
+        local dx = self.target.x - self.x
+        local dy = self.target.y - self.y
+        local targetRotation = math.atan2(dy, dx)
+        self.rotation = MathUtils.lerpAngle(self.rotation, targetRotation, self.rotationSpeed, dt)
+    end
+
+    -- Fire if cooldown expired and target exists
+    if self.cooldown <= 0 and self.target then
+        -- Spawn lobbed projectile via event (handled by init.lua)
+        EventBus.emit("spawn_lobbed_projectile", {
+            startX = self.x,
+            startY = self.y,
+            targetX = self.target.x,
+            targetY = self.target.y,
+            damage = self.damage,
+            sourceTower = self,
+        })
+
+        self.cooldown = 1 / self.fireRate
+
+        -- Trigger recoil and muzzle flash
+        self.recoilTimer = self.recoilDuration
+        self.muzzleFlashTimer = 0.1
+
+        -- Emit tower fired event
+        EventBus.emit("tower_fired", { towerType = self.towerType })
+    end
+end
+
+function Tower:draw()
     -- Calculate recoil offset (0-1 value for animation)
     local recoilOffset = PixelArt.calculateRecoil(self.recoilTimer, self.recoilDuration)
 
@@ -347,8 +683,31 @@ function Tower:draw()
             self.rotation,
             recoilOffset,
             self.voidTime,
-            self.voidSeed
+            self.voidSeed,
+            self.buildProgress,
+            self.buildParticles,
+            self.level
         )
+
+        -- Hover/selected glow: redraw with additive blend to brighten the sprite
+        if drew and (self.isHovered or self.isSelected) then
+            love.graphics.setBlendMode("add")
+            love.graphics.setColor(0.3, 0.3, 0.3, 1)  -- Dim the additive pass
+            TurretConcepts.drawVariant(
+                voidVariant,
+                self.x,
+                self.y,
+                self.rotation,
+                recoilOffset,
+                self.voidTime,
+                self.voidSeed,
+                self.buildProgress,
+                self.buildParticles,
+                self.level
+            )
+            love.graphics.setBlendMode("alpha")
+            love.graphics.setColor(1, 1, 1, 1)  -- Reset color
+        end
 
         if drew and self.muzzleFlashTimer > 0 then
             TurretConcepts.drawMuzzleFlashVariant(
@@ -361,6 +720,23 @@ function Tower:draw()
             )
         end
 
+        -- Draw glow effect for drip attack (void_orb) - redraw only the void entity with additive blend
+        if drew and self.attackType == "drip" and self.glowIntensity and self.glowIntensity > 0 then
+            love.graphics.setBlendMode("add")
+            love.graphics.setColor(0.3 * self.glowIntensity, 0.5 * self.glowIntensity, 0.2 * self.glowIntensity, 1)
+            TurretConcepts.drawVoidEntityOnly(
+                voidVariant,
+                self.x,
+                self.y,
+                self.rotation,
+                self.voidTime,
+                self.voidSeed,
+                self.level
+            )
+            love.graphics.setBlendMode("alpha")
+            love.graphics.setColor(1, 1, 1, 1)
+        end
+
         if drew then
             -- Draw beam effects on top of tower
             self:drawBeamEffects()
@@ -368,8 +744,17 @@ function Tower:draw()
         end
     end
 
-    -- Fallback to pixel art (for wall and any tower without voidVariant)
+    -- Fallback to pixel art (for any tower without voidVariant)
     local drewPixelArt = PixelArt.drawTower(self.towerType, self.x, self.y, self.rotation, recoilOffset)
+
+    -- Hover/selected glow for pixel art towers
+    if drewPixelArt and (self.isHovered or self.isSelected) then
+        love.graphics.setBlendMode("add")
+        love.graphics.setColor(0.3, 0.3, 0.3, 1)  -- Dim the additive pass
+        PixelArt.drawTower(self.towerType, self.x, self.y, self.rotation, recoilOffset)
+        love.graphics.setBlendMode("alpha")
+        love.graphics.setColor(1, 1, 1, 1)  -- Reset color
+    end
 
     -- Draw muzzle flash if active
     if drewPixelArt and self.muzzleFlashTimer > 0 then
@@ -386,7 +771,7 @@ function Tower:draw()
         love.graphics.setColor(self.color)
         love.graphics.circle("fill", self.x, self.y, Config.TOWER_SIZE * 0.7)
 
-        -- Non-attacking towers (walls) don't have a barrel
+        -- Non-attacking towers don't have a barrel
         if self.fireRate and self.fireRate > 0 then
             -- Draw barrel toward rotation
             local barrelLength = Config.TOWER_SIZE * Config.TOWER_BARREL_LENGTH
@@ -403,8 +788,25 @@ function Tower:draw()
     self:drawBeamEffects()
 end
 
--- Draw beam charging/firing effects for void_eye
+-- Draw beam charging/firing effects for void_eye (now blackhole charging)
 function Tower:drawBeamEffects()
+    -- Blackhole has no charging line - just spawns blackhole
+    if self.attackType == "blackhole" then
+        return
+    end
+
+    -- Drip effect for void_orb
+    if self.attackType == "drip" then
+        local attackCfg = Config.TOWER_ATTACKS.void_orb
+
+        if self.attackState == Tower.STATE_DRIPPING and self.dripTargetPos then
+            local dripProgress = self.dripTimer / attackCfg.dripDuration
+            GroundEffects.drawDripEffect(self.x, self.y, self.dripTargetPos.x, self.dripTargetPos.y, dripProgress)
+        end
+        return
+    end
+
+    -- Legacy beam attack (kept for compatibility)
     if self.attackType ~= "beam" then return end
 
     local attackCfg = Config.TOWER_ATTACKS.void_eye

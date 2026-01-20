@@ -12,8 +12,6 @@ local BurningGround = Object:extend()
 -- Unique seed counter for each fire instance
 local seedCounter = 0
 
--- Perspective scale (must match ground_effects.lua)
-local PERSPECTIVE_Y_SCALE = 0.9
 
 function BurningGround:new(x, y)
     self.x = x
@@ -47,9 +45,9 @@ function BurningGround:spawnInitialEmbers()
         local dist = math.random() * self.radius * 0.7
         table.insert(self.embers, {
             x = self.x + math.cos(angle) * dist,
-            y = self.y + math.sin(angle) * dist * PERSPECTIVE_Y_SCALE,
+            y = self.y + math.sin(angle) * dist * Config.GROUND_EFFECTS.perspectiveYScale,
             vx = (math.random() - 0.5) * cfg.emberSpeed * 0.5,
-            vy = -cfg.emberSpeed * (0.5 + math.random() * 0.8) * PERSPECTIVE_Y_SCALE,
+            vy = -cfg.emberSpeed * (0.5 + math.random() * 0.8) * Config.GROUND_EFFECTS.perspectiveYScale,
             life = 0.3 + math.random() * 0.4,
             maxLife = 0.7,
             size = 2 + math.random() * 2,
@@ -86,7 +84,7 @@ function BurningGround:update(dt, creeps)
                     StatusEffects.apply(creep, StatusEffects.BURN, {
                         damagePerTick = self.damagePerTick,
                         tickInterval = self.tickInterval,
-                        duration = 1.5,  -- Burn lingers after leaving fire
+                        duration = Config.STATUS_EFFECTS.burn.duration,
                     })
                 end
             end
@@ -111,9 +109,9 @@ function BurningGround:update(dt, creeps)
             local angle = math.random() * math.pi * 2
             local dist = math.random() * self.radius * 0.7
             e.x = self.x + math.cos(angle) * dist
-            e.y = self.y + math.sin(angle) * dist * PERSPECTIVE_Y_SCALE
+            e.y = self.y + math.sin(angle) * dist * Config.GROUND_EFFECTS.perspectiveYScale
             e.vx = (math.random() - 0.5) * cfg.emberSpeed * 0.5
-            e.vy = -cfg.emberSpeed * (0.5 + math.random() * 0.8) * PERSPECTIVE_Y_SCALE
+            e.vy = -cfg.emberSpeed * (0.5 + math.random() * 0.8) * Config.GROUND_EFFECTS.perspectiveYScale
             e.life = 0.3 + math.random() * 0.4
         end
     end

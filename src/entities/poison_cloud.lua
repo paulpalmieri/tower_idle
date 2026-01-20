@@ -12,8 +12,6 @@ local PoisonCloud = Object:extend()
 -- Unique seed counter for each cloud instance
 local seedCounter = 0
 
--- Perspective scale (must match ground_effects.lua)
-local PERSPECTIVE_Y_SCALE = 0.9
 
 function PoisonCloud:new(x, y)
     self.x = x
@@ -50,9 +48,9 @@ function PoisonCloud:spawnInitialParticles()
         local dist = math.random() * self.radius * 0.8
         table.insert(self.particles, {
             x = self.x + math.cos(angle) * dist,
-            y = self.y + math.sin(angle) * dist * PERSPECTIVE_Y_SCALE,
+            y = self.y + math.sin(angle) * dist * Config.GROUND_EFFECTS.perspectiveYScale,
             vx = (math.random() - 0.5) * cfg.particleSpeed,
-            vy = -cfg.particleSpeed * (0.5 + math.random() * 0.5) * PERSPECTIVE_Y_SCALE,
+            vy = -cfg.particleSpeed * (0.5 + math.random() * 0.5) * Config.GROUND_EFFECTS.perspectiveYScale,
             life = 0.5 + math.random() * 0.5,
             maxLife = 1.0,
             size = 2 + math.random() * 2,
@@ -89,7 +87,7 @@ function PoisonCloud:update(dt, creeps)
                     StatusEffects.apply(creep, StatusEffects.POISON, {
                         damagePerTick = self.damagePerTick,
                         tickInterval = self.tickInterval,
-                        duration = 2.0,  -- Poison lingers after leaving cloud
+                        duration = Config.STATUS_EFFECTS.poison.duration,
                     })
                 end
             end
@@ -114,9 +112,9 @@ function PoisonCloud:update(dt, creeps)
             local angle = math.random() * math.pi * 2
             local dist = math.random() * self.radius * 0.8
             p.x = self.x + math.cos(angle) * dist
-            p.y = self.y + math.sin(angle) * dist * PERSPECTIVE_Y_SCALE
+            p.y = self.y + math.sin(angle) * dist * Config.GROUND_EFFECTS.perspectiveYScale
             p.vx = (math.random() - 0.5) * cfg.particleSpeed
-            p.vy = -cfg.particleSpeed * (0.5 + math.random() * 0.5) * PERSPECTIVE_Y_SCALE
+            p.vy = -cfg.particleSpeed * (0.5 + math.random() * 0.5) * Config.GROUND_EFFECTS.perspectiveYScale
             p.life = 0.5 + math.random() * 0.5
         end
     end

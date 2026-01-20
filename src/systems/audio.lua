@@ -12,6 +12,7 @@ local Audio = {}
 -- Private state
 local pools = {}
 local initialized = false
+local eventsSubscribed = false
 
 -- Ambient state
 local ambient = {
@@ -183,23 +184,12 @@ local function updateAmbient(dt)
 end
 
 -- =============================================================================
--- PUBLIC API
+-- INTERNAL HELPERS
 -- =============================================================================
 
-function Audio.init()
-    if not Config.AUDIO.enabled then return end
+local function subscribeToEvents()
+    if eventsSubscribed then return end
 
-    local s = Config.AUDIO.sounds
-
-    pools.void_fire = createPool(genVoidFire(), s.void_fire.poolSize, s.void_fire.volume)
-    pools.creep_spawn = createPool(genCreepSpawn(), s.creep_spawn.poolSize, s.creep_spawn.volume)
-    pools.creep_hit = createPool(genCreepHit(), s.creep_hit.poolSize, s.creep_hit.volume)
-    pools.creep_death = createPool(genCreepDeath(), s.creep_death.poolSize, s.creep_death.volume)
-
-    -- Initialize ambient
-    initAmbient()
-
-    -- Event subscriptions
     EventBus.on("tower_fired", function(data)
         -- All void turrets use void_fire sound
         local towerType = data.towerType
@@ -222,7 +212,32 @@ function Audio.init()
         Audio.play("creep_death")
     end)
 
+    eventsSubscribed = true
+end
+
+local function initializePools()
+    if initialized then return end
+
+    local s = Config.AUDIO.sounds
+
+    pools.void_fire = createPool(genVoidFire(), s.void_fire.poolSize, s.void_fire.volume)
+    pools.creep_spawn = createPool(genCreepSpawn(), s.creep_spawn.poolSize, s.creep_spawn.volume)
+    pools.creep_hit = createPool(genCreepHit(), s.creep_hit.poolSize, s.creep_hit.volume)
+    pools.creep_death = createPool(genCreepDeath(), s.creep_death.poolSize, s.creep_death.volume)
+
+    initAmbient()
     initialized = true
+end
+
+-- =============================================================================
+-- PUBLIC API
+-- =============================================================================
+
+function Audio.init()
+    if not Config.AUDIO.enabled then return end
+
+    initializePools()
+    subscribeToEvents()
 end
 
 function Audio.update(dt)
@@ -260,7 +275,11 @@ end
 
 function Audio.setEnabled(enabled)
     Config.AUDIO.enabled = enabled
-    if not enabled then
+    if enabled then
+        -- Late initialization if audio wasn't set up at startup
+        initializePools()
+        subscribeToEvents()
+    else
         for _, pool in pairs(pools) do
             for _, src in ipairs(pool.sources) do
                 src:stop()

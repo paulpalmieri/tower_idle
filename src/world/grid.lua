@@ -101,28 +101,33 @@ function Grid.placeTower(gridX, gridY, tower)
     return true
 end
 
-function Grid.draw(showGridOverlay)
-    -- Draw grid lines only when placing towers
-    if showGridOverlay then
-        love.graphics.setColor(Config.COLORS.grid)
-        -- Draw horizontal lines (but stop before base zone)
-        local buildableRows = state.rows - Config.BASE_ROWS
-        for y = 0, buildableRows do
-            local screenY = state.offsetY + y * state.cellSize
-            love.graphics.line(state.offsetX, screenY, state.offsetX + state.cols * state.cellSize, screenY)
-        end
-        -- Draw vertical lines (only in buildable area)
-        for x = 0, state.cols do
-            local screenX = state.offsetX + x * state.cellSize
-            love.graphics.line(screenX, state.offsetY, screenX, state.offsetY + buildableRows * state.cellSize)
-        end
+function Grid.clearCell(gridX, gridY)
+    if not Grid.isValidCell(gridX, gridY) then return false end
+    -- Only clear if it's currently a tower (1)
+    if state.cells[gridY][gridX] == 1 then
+        state.cells[gridY][gridX] = 0
+        return true
+    end
+    return false
+end
 
-        -- Draw base zone boundary line (slightly brighter to show limit)
-        local baseY = state.offsetY + buildableRows * state.cellSize
-        love.graphics.setColor(Config.COLORS.grid[1] * 1.5, Config.COLORS.grid[2] * 1.5, Config.COLORS.grid[3] * 1.5, 0.6)
-        love.graphics.setLineWidth(2)
-        love.graphics.line(state.offsetX, baseY, state.offsetX + state.cols * state.cellSize, baseY)
-        love.graphics.setLineWidth(1)
+function Grid.draw(showGridOverlay)
+    -- Draw small dots at center of each buildable cell when placing towers
+    if showGridOverlay then
+        local buildableRows = state.rows - Config.BASE_ROWS
+        local dotRadius = 6
+        love.graphics.setColor(Config.COLORS.grid)
+
+        for y = 1, buildableRows do
+            for x = 1, state.cols do
+                -- Only show dots for empty (buildable) cells
+                if state.cells[y][x] == 0 then
+                    local centerX = state.offsetX + (x - 0.5) * state.cellSize
+                    local centerY = state.offsetY + (y - 0.5) * state.cellSize
+                    love.graphics.circle("fill", centerX, centerY, dotRadius)
+                end
+            end
+        end
     end
 
     -- Base zone no longer draws tiles - exit portal draws there instead
@@ -132,33 +137,27 @@ function Grid.drawHover(mouseX, mouseY, canAfford, towerType)
     local gridX, gridY = Grid.screenToGrid(mouseX, mouseY)
     if not Grid.isValidCell(gridX, gridY) then return end
 
-    local screenX = state.offsetX + (gridX - 1) * state.cellSize
-    local screenY = state.offsetY + (gridY - 1) * state.cellSize
     local canPlace = Grid.canPlaceTower(gridX, gridY) and canAfford
+    local centerX, centerY = Grid.gridToScreen(gridX, gridY)
 
+    -- Draw highlighted dot at hovered cell (white if can place, red if cannot)
+    local dotRadius = 8  -- Slightly larger than grid dots
     if canPlace then
-        love.graphics.setColor(1, 1, 1, 0.3)
+        love.graphics.setColor(1, 1, 1, 0.9)
     else
-        love.graphics.setColor(1, 0.3, 0.3, 0.3)
+        love.graphics.setColor(1, 0.3, 0.3, 0.7)
     end
-    love.graphics.rectangle("fill", screenX + 1, screenY + 1, state.cellSize - 2, state.cellSize - 2)
+    love.graphics.circle("fill", centerX, centerY, dotRadius)
 
-    -- Draw range preview for valid placements (non-wall towers) - transparent white
+    -- Draw range preview for valid placements - subtle fill only, no border
+    -- Flattened ellipse for top-down perspective
     if canPlace and towerType then
         local towerStats = Config.TOWERS[towerType]
         local range = towerStats and towerStats.range or 0
         if range > 0 then
-            local centerX, centerY = Grid.gridToScreen(gridX, gridY)
-            local previewConfig = Config.UI.rangePreview
-
-            -- Fill circle (white)
-            love.graphics.setColor(1, 1, 1, previewConfig.fillAlpha)
-            love.graphics.circle("fill", centerX, centerY, range)
-
-            -- Stroke circle (white)
-            love.graphics.setColor(1, 1, 1, previewConfig.strokeAlpha)
-            love.graphics.setLineWidth(previewConfig.strokeWidth)
-            love.graphics.circle("line", centerX, centerY, range)
+            -- Very subtle fill ellipse (squashed vertically for perspective)
+            love.graphics.setColor(1, 1, 1, 0.05)
+            love.graphics.ellipse("fill", centerX, centerY, range, range * 0.9)
         end
     end
 end

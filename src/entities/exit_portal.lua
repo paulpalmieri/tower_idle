@@ -69,6 +69,14 @@ function ExitPortal:generatePixels()
                 cfg.octaves
             )
 
+            -- Pre-compute wobble phase offset (OPTIMIZATION)
+            local wobblePhase = Procedural.fbm(
+                angle * cfg.wobbleFrequency,
+                0,
+                self.seed + 500,
+                2
+            ) * math.pi * 2
+
             -- Only include pixels that could potentially be visible
             local maxEdgeRadius = radius * (0.7 + 0.5 + cfg.wobbleAmount * 0.5)
             if dist < maxEdgeRadius then
@@ -82,6 +90,7 @@ function ExitPortal:generatePixels()
                     distNorm = distNorm,
                     angle = angle,
                     baseEdgeNoise = baseEdgeNoise,
+                    wobblePhase = wobblePhase,
                     rnd = Procedural.hash(px, py, self.seed + 888),
                     rnd2 = Procedural.hash(px * 2.1, py * 1.7, self.seed + 777),
                 })
@@ -222,13 +231,8 @@ function ExitPortal:draw()
 
     -- Draw each pixel with animated void effects (matching Void:draw)
     for _, p in ipairs(self.pixels) do
-        -- Calculate animated edge boundary for this pixel's angle
-        local wobbleNoise = Procedural.fbm(
-            p.angle * cfg.wobbleFrequency + t * cfg.wobbleSpeed,
-            t * cfg.wobbleSpeed * 0.3,
-            self.seed + 500,
-            2
-        )
+        -- Calculate animated edge boundary using pre-computed wobblePhase (OPTIMIZED)
+        local wobbleNoise = math.sin(t * cfg.wobbleSpeed + p.wobblePhase) * 0.5 + 0.5
         local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
 
         -- Skip pixels outside the current animated boundary

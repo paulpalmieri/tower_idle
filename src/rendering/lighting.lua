@@ -1,5 +1,6 @@
 -- src/rendering/lighting.lua
 -- Simple canvas-based lighting: creeps, towers, and void glow
+-- OPTIMIZED: Configurable quality levels and frame throttling
 
 local Config = require("src.config")
 local Settings = require("src.ui.settings")
@@ -10,12 +11,16 @@ local state = {
     canvas = nil,
     glowCanvas = nil,  -- Pre-lighting glow layer
     time = 0,
+    frameCounter = 0,  -- For frame throttling
+    needsUpdate = true,  -- Flag to indicate if render should happen this frame
 }
 
 function Lighting.init()
     state.canvas = love.graphics.newCanvas(Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT)
     state.glowCanvas = love.graphics.newCanvas(Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT)
     state.time = 0
+    state.frameCounter = 0
+    state.needsUpdate = true
 end
 
 -- Recreate canvases when window size changes (e.g., borderless toggle)
@@ -26,6 +31,11 @@ end
 
 function Lighting.update(dt)
     state.time = state.time + dt
+
+    -- OPTIMIZATION: Frame throttling - only update lighting every N frames
+    state.frameCounter = state.frameCounter + 1
+    local updateRate = Config.LIGHTING.updateEveryNFrames or 1
+    state.needsUpdate = (state.frameCounter % updateRate) == 0
 end
 
 function Lighting.toggle()
@@ -36,25 +46,48 @@ function Lighting.isActive()
     return Settings.isLightingEnabled()
 end
 
--- Draw a diffuse radial light (additive) - soft falloff, wide spread
+-- OPTIMIZATION: Quality-based light drawing
+-- High = 5 circles (original), Medium = 3 circles, Low = 2 circles
 local function drawLight(x, y, radius, r, g, b, intensity)
     intensity = intensity or 1.0
-    -- More layers for smoother, more diffuse light
-    love.graphics.setColor(r * intensity * 0.15, g * intensity * 0.15, b * intensity * 0.15, 0.9)
-    love.graphics.circle("fill", x, y, radius * 1.4)  -- Outer diffuse halo
-    love.graphics.setColor(r * intensity * 0.3, g * intensity * 0.3, b * intensity * 0.3, 0.7)
-    love.graphics.circle("fill", x, y, radius)
-    love.graphics.setColor(r * intensity * 0.5, g * intensity * 0.5, b * intensity * 0.5, 0.5)
-    love.graphics.circle("fill", x, y, radius * 0.65)
-    love.graphics.setColor(r * intensity * 0.8, g * intensity * 0.8, b * intensity * 0.8, 0.4)
-    love.graphics.circle("fill", x, y, radius * 0.35)
-    love.graphics.setColor(r * intensity, g * intensity, b * intensity, 0.3)
-    love.graphics.circle("fill", x, y, radius * 0.15)
+    local quality = Config.LIGHTING.quality or "high"
+
+    if quality == "high" then
+        -- Original: 5 overlapping circles
+        love.graphics.setColor(r * intensity * 0.15, g * intensity * 0.15, b * intensity * 0.15, 0.9)
+        love.graphics.circle("fill", x, y, radius * 1.4)
+        love.graphics.setColor(r * intensity * 0.3, g * intensity * 0.3, b * intensity * 0.3, 0.7)
+        love.graphics.circle("fill", x, y, radius)
+        love.graphics.setColor(r * intensity * 0.5, g * intensity * 0.5, b * intensity * 0.5, 0.5)
+        love.graphics.circle("fill", x, y, radius * 0.65)
+        love.graphics.setColor(r * intensity * 0.8, g * intensity * 0.8, b * intensity * 0.8, 0.4)
+        love.graphics.circle("fill", x, y, radius * 0.35)
+        love.graphics.setColor(r * intensity, g * intensity, b * intensity, 0.3)
+        love.graphics.circle("fill", x, y, radius * 0.15)
+    elseif quality == "medium" then
+        -- 3 circles - good balance
+        love.graphics.setColor(r * intensity * 0.2, g * intensity * 0.2, b * intensity * 0.2, 0.8)
+        love.graphics.circle("fill", x, y, radius * 1.2)
+        love.graphics.setColor(r * intensity * 0.5, g * intensity * 0.5, b * intensity * 0.5, 0.5)
+        love.graphics.circle("fill", x, y, radius * 0.6)
+        love.graphics.setColor(r * intensity * 0.9, g * intensity * 0.9, b * intensity * 0.9, 0.35)
+        love.graphics.circle("fill", x, y, radius * 0.2)
+    else  -- "low"
+        -- 2 circles - fastest
+        love.graphics.setColor(r * intensity * 0.3, g * intensity * 0.3, b * intensity * 0.3, 0.7)
+        love.graphics.circle("fill", x, y, radius)
+        love.graphics.setColor(r * intensity * 0.8, g * intensity * 0.8, b * intensity * 0.8, 0.4)
+        love.graphics.circle("fill", x, y, radius * 0.3)
+    end
 end
 
 -- Render the full light map
 function Lighting.render(towers, creeps, projectiles, void, groundEffects, chainLightnings)
     if not Settings.isLightingEnabled() then return end
+
+    -- OPTIMIZATION: Skip render if frame throttling says not to update
+    -- The previous frame's canvas is still valid and will be used
+    if not state.needsUpdate then return end
 
     love.graphics.setCanvas(state.canvas)
     love.graphics.clear()

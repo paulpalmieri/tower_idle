@@ -1,5 +1,5 @@
 -- src/ui/tooltip.lua
--- Tower upgrade tooltip UI component with pixel art styling
+-- Tower selection menu UI component with stats, upgrade, and sell buttons
 
 local Config = require("src.config")
 local Fonts = require("src.rendering.fonts")
@@ -14,15 +14,8 @@ local state = {
     y = 0,
     width = 0,
     height = 0,
-    buttons = {},
-}
-
--- Upgrade types in display order
-local UPGRADE_ORDER = {"damage", "fireRate", "range"}
-local UPGRADE_LABELS = {
-    damage = "Damage",
-    fireRate = "Fire Rate",
-    range = "Range",
+    upgradeButton = nil,
+    sellButton = nil,
 }
 
 local function _calculateTooltipPosition(tower)
@@ -30,15 +23,17 @@ local function _calculateTooltipPosition(tower)
     local screenWidth = Config.SCREEN_WIDTH
     local screenHeight = Config.SCREEN_HEIGHT
 
-    -- Calculate total height
-    local headerHeight = Config.UI.LAYOUT.sectionTitleHeight
-    local buttonCount = #UPGRADE_ORDER
-    local totalHeight = cfg.padding * 2 + headerHeight +
-                        buttonCount * cfg.buttonHeight +
-                        (buttonCount - 1) * cfg.buttonSpacing
+    -- Calculate total height:
+    -- Header (name + level)
+    -- Stats rows (2 rows x 2 stats each)
+    -- Separator
+    -- Buttons (upgrade + sell)
+    local headerHeight = cfg.headerHeight
+    local statsHeight = cfg.statsRowHeight * 2 + cfg.buttonSpacing
+    local buttonsHeight = cfg.buttonHeight + cfg.buttonSpacing
 
     state.width = cfg.width
-    state.height = totalHeight
+    state.height = cfg.padding * 2 + headerHeight + statsHeight + buttonsHeight
 
     -- Position to the right of the tower by default
     local tooltipX = tower.x + cfg.offsetX
@@ -64,29 +59,37 @@ end
 
 local function _buildButtons()
     local cfg = Config.UI.tooltip
-    state.buttons = {}
+    local tower = state.tower
+    if not tower then return end
 
-    local buttonY = state.y + cfg.padding + Config.UI.LAYOUT.sectionTitleHeight  -- After header
-    local buttonWidth = state.width - cfg.padding * 2
+    -- Button Y position after stats
+    local headerHeight = cfg.headerHeight
+    local statsHeight = cfg.statsRowHeight * 2 + cfg.buttonSpacing
+    local buttonY = state.y + cfg.padding + headerHeight + statsHeight
 
-    for i, stat in ipairs(UPGRADE_ORDER) do
-        state.buttons[i] = {
-            stat = stat,
-            x = state.x + cfg.padding,
-            y = buttonY,
-            width = buttonWidth,
-            height = cfg.buttonHeight,
-        }
-        buttonY = buttonY + cfg.buttonHeight + cfg.buttonSpacing
-    end
+    -- Calculate button widths (upgrade takes more space than sell)
+    local totalWidth = state.width - cfg.padding * 2
+    local upgradeWidth = math.floor(totalWidth * 0.65)
+    local sellWidth = totalWidth - upgradeWidth - cfg.buttonSpacing
+
+    -- Upgrade button
+    state.upgradeButton = {
+        x = state.x + cfg.padding,
+        y = buttonY,
+        width = upgradeWidth,
+        height = cfg.buttonHeight,
+    }
+
+    -- Sell button
+    state.sellButton = {
+        x = state.x + cfg.padding + upgradeWidth + cfg.buttonSpacing,
+        y = buttonY,
+        width = sellWidth,
+        height = cfg.buttonHeight,
+    }
 end
 
 function Tooltip.show(tower)
-    -- Don't show tooltip for walls (no upgrades)
-    if tower.towerType == "wall" then
-        return
-    end
-
     state.visible = true
     state.tower = tower
     _calculateTooltipPosition(tower)
@@ -96,7 +99,8 @@ end
 function Tooltip.hide()
     state.visible = false
     state.tower = nil
-    state.buttons = {}
+    state.upgradeButton = nil
+    state.sellButton = nil
 end
 
 function Tooltip.isVisible()
@@ -118,7 +122,18 @@ function Tooltip.isHoveringButton(x, y)
         return false
     end
 
-    for _, btn in ipairs(state.buttons) do
+    -- Check upgrade button
+    if state.upgradeButton then
+        local btn = state.upgradeButton
+        if x >= btn.x and x <= btn.x + btn.width and
+           y >= btn.y and y <= btn.y + btn.height then
+            return true
+        end
+    end
+
+    -- Check sell button
+    if state.sellButton then
+        local btn = state.sellButton
         if x >= btn.x and x <= btn.x + btn.width and
            y >= btn.y and y <= btn.y + btn.height then
             return true
@@ -133,14 +148,28 @@ function Tooltip.handleClick(x, y, economy)
         return nil
     end
 
-    for _, btn in ipairs(state.buttons) do
+    local tower = state.tower
+
+    -- Check upgrade button
+    if state.upgradeButton then
+        local btn = state.upgradeButton
         if x >= btn.x and x <= btn.x + btn.width and
            y >= btn.y and y <= btn.y + btn.height then
-            local cost = state.tower:getUpgradeCost(btn.stat)
+            local cost = tower:getUpgradeCost()
             if cost and economy.canAfford(cost) then
-                return {action = "upgrade", stat = btn.stat, cost = cost}
+                return {action = "upgrade", cost = cost}
             end
             return nil
+        end
+    end
+
+    -- Check sell button
+    if state.sellButton then
+        local btn = state.sellButton
+        if x >= btn.x and x <= btn.x + btn.width and
+           y >= btn.y and y <= btn.y + btn.height then
+            local refund = tower:getSellValue()
+            return {action = "sell", refund = refund}
         end
     end
 
@@ -154,65 +183,123 @@ function Tooltip.draw(economy)
 
     local tower = state.tower
     local cfg = Config.UI.tooltip
-    local colors = Config.COLORS.upgrade
+    local colors = Config.COLORS
 
     -- Background frame with ornate pixel styling
     PixelFrames.drawOrnateFrame(state.x, state.y, state.width, state.height, "tooltip")
 
-    -- Header
+    -- Header: Tower name and level
     local towerConfig = Config.TOWERS[tower.towerType]
+    local contentY = state.y + cfg.padding
+
+    -- Tower name (left)
     Fonts.setFont("medium")
     love.graphics.setColor(towerConfig.color)
-    local headerText = towerConfig.name .. " Upgrades"
-    love.graphics.print(headerText, state.x + cfg.padding, state.y + cfg.padding)
+    love.graphics.print(towerConfig.name, state.x + cfg.padding, contentY)
 
-    -- Upgrade buttons
-    for _, btn in ipairs(state.buttons) do
-        local stat = btn.stat
-        local level = tower.upgrades[stat]
-        local maxLevel = Config.UPGRADES.maxLevel
-        local cost = tower:getUpgradeCost(stat)
-        local canAfford = cost and economy.canAfford(cost)
-        local isMaxed = level >= maxLevel
-        local statColor = colors[stat]
+    -- Level (right)
+    local levelText = "Lv." .. tower.level
+    local levelWidth = Fonts.get("medium"):getWidth(levelText)
+    love.graphics.setColor(colors.gold)
+    love.graphics.print(levelText, state.x + state.width - cfg.padding - levelWidth, contentY)
 
-        -- Button background with pixel frame styling
+    -- Stats section
+    contentY = contentY + cfg.headerHeight
+    Fonts.setFont("small")
+
+    -- Row 1: ATK and RATE
+    local col1X = state.x + cfg.padding
+    local col2X = state.x + state.width / 2 + 5
+
+    -- ATK (damage)
+    love.graphics.setColor(colors.upgrade.damage)
+    love.graphics.print("ATK:", col1X, contentY)
+    love.graphics.setColor(colors.textPrimary)
+    love.graphics.print(string.format("%.0f", tower.damage), col1X + 32, contentY)
+
+    -- RATE (fire rate)
+    love.graphics.setColor(colors.upgrade.fireRate)
+    love.graphics.print("RATE:", col2X, contentY)
+    love.graphics.setColor(colors.textPrimary)
+    love.graphics.print(string.format("%.1f/s", tower.fireRate), col2X + 38, contentY)
+
+    -- Row 2: RNG and KILLS
+    contentY = contentY + cfg.statsRowHeight
+
+    -- RNG (range)
+    love.graphics.setColor(colors.upgrade.range)
+    love.graphics.print("RNG:", col1X, contentY)
+    love.graphics.setColor(colors.textPrimary)
+    love.graphics.print(string.format("%.0f", tower.range), col1X + 32, contentY)
+
+    -- KILLS
+    love.graphics.setColor(colors.emerald)
+    love.graphics.print("KILLS:", col2X, contentY)
+    love.graphics.setColor(colors.textPrimary)
+    love.graphics.print(tostring(tower.kills), col2X + 42, contentY)
+
+    -- Draw buttons
+    local isMaxed = not tower:canUpgrade()
+    local cost = tower:getUpgradeCost()
+    local canAfford = cost and economy.canAfford(cost)
+    local sellValue = tower:getSellValue()
+
+    -- Upgrade button
+    if state.upgradeButton then
+        local btn = state.upgradeButton
         local styleName = "standard"
         if isMaxed then
             styleName = "disabled"
         elseif canAfford then
             styleName = "selected"
         else
-            styleName = "disabled"
+            styleName = "standard"
         end
         PixelFrames.drawSimpleFrame(btn.x, btn.y, btn.width, btn.height, styleName)
 
-        -- Color accent bar on left side
-        love.graphics.setColor(statColor[1], statColor[2], statColor[3], 0.8)
-        love.graphics.rectangle("fill", btn.x, btn.y, 3, btn.height)
-
-        -- Stat name
         Fonts.setFont("small")
-        love.graphics.setColor(statColor)
-        love.graphics.print(UPGRADE_LABELS[stat], btn.x + 10, btn.y + 4)
-
-        -- Level indicator
-        local levelText = "Lv." .. level .. "/" .. maxLevel
-        love.graphics.setColor(Config.COLORS.textSecondary)
-        love.graphics.print(levelText, btn.x + btn.width - 50, btn.y + 4)
-
-        -- Cost or MAX
         if isMaxed then
+            -- MAX label
             love.graphics.setColor(0.5, 0.8, 0.5)
-            love.graphics.print("MAX", btn.x + 10, btn.y + 18)
+            local maxText = "MAX"
+            local maxWidth = Fonts.get("small"):getWidth(maxText)
+            love.graphics.print(maxText, btn.x + (btn.width - maxWidth) / 2, btn.y + 4)
         else
+            -- UPGRADE label
             if canAfford then
-                love.graphics.setColor(Config.COLORS.gold)
+                love.graphics.setColor(colors.textPrimary)
             else
-                love.graphics.setColor(Config.COLORS.textDisabled)
+                love.graphics.setColor(colors.textDisabled)
             end
-            love.graphics.print(cost .. "g", btn.x + 10, btn.y + 18)
+            love.graphics.print("UPGRADE", btn.x + 8, btn.y + 4)
+
+            -- Cost
+            if canAfford then
+                love.graphics.setColor(colors.gold)
+            else
+                love.graphics.setColor(colors.textDisabled)
+            end
+            local costText = cost .. "g"
+            local costWidth = Fonts.get("small"):getWidth(costText)
+            love.graphics.print(costText, btn.x + btn.width - costWidth - 8, btn.y + 4)
         end
+    end
+
+    -- Sell button
+    if state.sellButton then
+        local btn = state.sellButton
+        PixelFrames.drawSimpleFrame(btn.x, btn.y, btn.width, btn.height, "standard")
+
+        Fonts.setFont("small")
+        -- SELL label with red tint
+        love.graphics.setColor(colors.ruby[1], colors.ruby[2], colors.ruby[3], 0.9)
+        love.graphics.print("SELL", btn.x + 6, btn.y + 4)
+
+        -- Refund amount (smaller, below)
+        love.graphics.setColor(colors.gold[1], colors.gold[2], colors.gold[3], 0.8)
+        local refundText = sellValue .. "g"
+        local refundWidth = Fonts.get("small"):getWidth(refundText)
+        love.graphics.print(refundText, btn.x + btn.width - refundWidth - 6, btn.y + 4)
     end
 end
 
