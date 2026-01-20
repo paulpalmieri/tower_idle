@@ -1,7 +1,9 @@
 -- src/ui/tooltip.lua
--- Tower upgrade tooltip UI component
+-- Tower upgrade tooltip UI component with pixel art styling
 
 local Config = require("src.config")
+local Fonts = require("src.rendering.fonts")
+local PixelFrames = require("src.ui.pixel_frames")
 
 local Tooltip = {}
 
@@ -23,13 +25,13 @@ local UPGRADE_LABELS = {
     range = "Range",
 }
 
-local function calculateTooltipPosition(tower)
+local function _calculateTooltipPosition(tower)
     local cfg = Config.UI.tooltip
     local screenWidth = Config.SCREEN_WIDTH
     local screenHeight = Config.SCREEN_HEIGHT
 
     -- Calculate total height
-    local headerHeight = 35
+    local headerHeight = Config.UI.LAYOUT.sectionTitleHeight
     local buttonCount = #UPGRADE_ORDER
     local totalHeight = cfg.padding * 2 + headerHeight +
                         buttonCount * cfg.buttonHeight +
@@ -60,11 +62,11 @@ local function calculateTooltipPosition(tower)
     state.y = tooltipY
 end
 
-local function buildButtons()
+local function _buildButtons()
     local cfg = Config.UI.tooltip
     state.buttons = {}
 
-    local buttonY = state.y + cfg.padding + 35  -- After header
+    local buttonY = state.y + cfg.padding + Config.UI.LAYOUT.sectionTitleHeight  -- After header
     local buttonWidth = state.width - cfg.padding * 2
 
     for i, stat in ipairs(UPGRADE_ORDER) do
@@ -87,8 +89,8 @@ function Tooltip.show(tower)
 
     state.visible = true
     state.tower = tower
-    calculateTooltipPosition(tower)
-    buildButtons()
+    _calculateTooltipPosition(tower)
+    _buildButtons()
 end
 
 function Tooltip.hide()
@@ -109,6 +111,21 @@ function Tooltip.isPointInside(x, y)
     if not state.visible then return false end
     return x >= state.x and x <= state.x + state.width and
            y >= state.y and y <= state.y + state.height
+end
+
+function Tooltip.isHoveringButton(x, y)
+    if not state.visible or not state.tower then
+        return false
+    end
+
+    for _, btn in ipairs(state.buttons) do
+        if x >= btn.x and x <= btn.x + btn.width and
+           y >= btn.y and y <= btn.y + btn.height then
+            return true
+        end
+    end
+
+    return false
 end
 
 function Tooltip.handleClick(x, y, economy)
@@ -139,17 +156,12 @@ function Tooltip.draw(economy)
     local cfg = Config.UI.tooltip
     local colors = Config.COLORS.upgrade
 
-    -- Background
-    love.graphics.setColor(colors.tooltip)
-    love.graphics.rectangle("fill", state.x, state.y, state.width, state.height, 6)
-
-    -- Border
-    love.graphics.setColor(colors.tooltipBorder)
-    love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", state.x, state.y, state.width, state.height, 6)
+    -- Background frame with ornate pixel styling
+    PixelFrames.drawOrnateFrame(state.x, state.y, state.width, state.height, "tooltip")
 
     -- Header
     local towerConfig = Config.TOWERS[tower.towerType]
+    Fonts.setFont("medium")
     love.graphics.setColor(towerConfig.color)
     local headerText = towerConfig.name .. " Upgrades"
     love.graphics.print(headerText, state.x + cfg.padding, state.y + cfg.padding)
@@ -164,24 +176,25 @@ function Tooltip.draw(economy)
         local isMaxed = level >= maxLevel
         local statColor = colors[stat]
 
-        -- Button background
+        -- Button background with pixel frame styling
+        local styleName = "standard"
         if isMaxed then
-            love.graphics.setColor(0.15, 0.15, 0.2, 0.8)
+            styleName = "disabled"
         elseif canAfford then
-            love.graphics.setColor(0.1, 0.2, 0.1, 0.9)
+            styleName = "selected"
         else
-            love.graphics.setColor(0.2, 0.1, 0.1, 0.9)
+            styleName = "disabled"
         end
-        love.graphics.rectangle("fill", btn.x, btn.y, btn.width, btn.height, 4)
+        PixelFrames.drawSimpleFrame(btn.x, btn.y, btn.width, btn.height, styleName)
 
-        -- Button border (color-coded)
+        -- Color accent bar on left side
         love.graphics.setColor(statColor[1], statColor[2], statColor[3], 0.8)
-        love.graphics.setLineWidth(1)
-        love.graphics.rectangle("line", btn.x, btn.y, btn.width, btn.height, 4)
+        love.graphics.rectangle("fill", btn.x, btn.y, 3, btn.height)
 
         -- Stat name
+        Fonts.setFont("small")
         love.graphics.setColor(statColor)
-        love.graphics.print(UPGRADE_LABELS[stat], btn.x + 8, btn.y + 4)
+        love.graphics.print(UPGRADE_LABELS[stat], btn.x + 10, btn.y + 4)
 
         -- Level indicator
         local levelText = "Lv." .. level .. "/" .. maxLevel
@@ -191,14 +204,14 @@ function Tooltip.draw(economy)
         -- Cost or MAX
         if isMaxed then
             love.graphics.setColor(0.5, 0.8, 0.5)
-            love.graphics.print("MAX", btn.x + 8, btn.y + 18)
+            love.graphics.print("MAX", btn.x + 10, btn.y + 18)
         else
             if canAfford then
                 love.graphics.setColor(Config.COLORS.gold)
             else
                 love.graphics.setColor(Config.COLORS.textDisabled)
             end
-            love.graphics.print(cost .. "g", btn.x + 8, btn.y + 18)
+            love.graphics.print(cost .. "g", btn.x + 10, btn.y + 18)
         end
     end
 end

@@ -61,19 +61,15 @@ Send monsters to the Void to increase your passive income — but those same mon
 
 ### Towers
 
-4 tower types with distinct roles (see `src/config.lua` for stats):
-- **Turret** — Balanced DPS
-- **Rapid** — Crowd Control (fast fire, low damage)
-- **Sniper** — Single Target (high damage, slow fire)
-- **Cannon** — Area Damage (splash radius)
+3 tower types with distinct roles (see `src/config.lua` for stats):
+- **Wall** — Blocks paths, cannot attack
+- **Turret (basic)** — Balanced DPS, fast rotation tracking
+- **Sniper** — Single Target (high damage, slow fire, slow rotation)
 
 ### Enemies (Creeps)
 
-Geometric shapes where more sides = stronger (see `src/config.lua` for stats):
-- **Triangle** (3) — Fast, weak
-- **Square** (4) — Balanced
-- **Pentagon** (5) — Slow, tanky
-- **Hexagon** (6) — Very slow, very tanky
+Currently a single enemy type spawned from the Void (see `src/config.lua` for stats):
+- **Void Spawn** — Amorphous shadowy creature, pixel-art rendered with procedural effects
 
 ---
 
@@ -182,18 +178,28 @@ src/
 │   └── pathfinding.lua       # A*, flow fields
 │
 ├── entities/             # Game objects
-│   ├── tower.lua             # Tower entity
-│   ├── creep.lua             # Enemy entity
-│   └── projectile.lua        # Projectile entity
+│   ├── tower.lua             # Tower entity with upgrades
+│   ├── creep.lua             # Void Spawn enemy entity
+│   ├── projectile.lua        # Projectile entity
+│   └── void.lua              # The Void entity (clickable damage source)
+│
+├── rendering/            # Visual systems
+│   ├── pixel_art.lua         # Pixel art sprite parsing and rendering
+│   ├── background.lua        # Procedural pixelated ground texture
+│   ├── procedural.lua        # Shared procedural noise functions (fbm, hash)
+│   ├── fonts.lua             # Font loading and management
+│   └── atmosphere.lua        # Atmospheric visual effects
 │
 ├── world/                # Play area
 │   └── grid.lua              # Grid state and queries
 │
 └── ui/                   # User interface
-    ├── hud.lua               # In-game HUD
-    ├── panel.lua             # Side panel
-    └── screens/
-        └── game.lua          # Main game screen
+    ├── panel.lua             # Side panel (stats, towers, void, upgrades)
+    ├── tooltip.lua           # Tower upgrade tooltip
+    ├── cursor.lua            # Custom pixel art cursor
+    ├── shortcuts.lua         # Keyboard shortcuts overlay (toggle with ~)
+    ├── settings.lua          # Settings menu modal
+    └── pixel_frames.lua      # Pixel-perfect UI frame utilities
 ```
 
 ---
@@ -316,17 +322,23 @@ end
 
 | Event | Data | Emitted By |
 |-------|------|------------|
-| `creep_killed` | `{creep, reward, position}` | Game |
-| `creep_reached_base` | `{creep}` | Game |
-| `tower_placed` | `{tower, gridX, gridY}` | Game |
+| `creep_killed` | `{creep, reward, position}` | init.lua (Game) |
+| `creep_reached_base` | `{creep}` | init.lua (Game) |
+| `tower_placed` | `{tower, gridX, gridY}` | init.lua (Game) |
+| `tower_selected` | `{tower}` | init.lua (Game) |
+| `tower_selection_cleared` | `{}` | init.lua (Game) |
+| `tower_upgraded` | `{tower, stat, newLevel, cost}` | init.lua (Game) |
+| `upgrade_purchased` | `{type, level, cost}` | init.lua (Game) |
 | `spawn_creep` | `{creep}` | Waves |
 | `creep_sent` | `{type, income, totalSent}` | Economy |
 | `gold_changed` | `{amount, total}` | Economy |
 | `income_tick` | `{amount, total}` | Economy |
-| `wave_started` | `{waveNumber, enemyCount}` | Waves |
+| `wave_started` | `{waveNumber, enemyCount, angerLevel}` | Waves |
 | `wave_cleared` | `{waveNumber}` | Waves |
 | `life_lost` | `{remaining}` | Economy |
 | `game_over` | `{reason}` | Economy |
+| `void_clicked` | `{income, angerLevel}` | Void entity |
+| `void_reset` | `{permanentAnger}` | Void entity |
 
 ---
 
@@ -342,6 +354,183 @@ local Config = require("src.config")
 local tower = Tower.new(x, y, Config.TOWERS.basic)
 local startingGold = Config.STARTING_GOLD
 ```
+
+---
+
+## Pixel Art System
+
+Tower sprites are defined as ASCII art in `Config.PIXEL_ART.TOWERS`. The system uses nearest-neighbor filtering for crisp pixel art.
+
+### Sprite Format
+
+Sprites are multi-line strings where each character maps to a color:
+
+```lua
+basic = {
+    background = [[...]],  -- 16x16 static background
+    base = [[...]],        -- 16x16 turret body (no rotation)
+    barrel = [[...]],      -- Rotating barrel (variable size)
+    projectile = [[...]],  -- Small projectile sprite
+    recoil = { distance = 3, duration = 0.1 },
+    sounds = { fire = nil, hit = nil },  -- Placeholder for future
+}
+```
+
+### Color Mappings
+
+| Char | Color | Usage |
+|------|-------|-------|
+| `.` | Transparent | Empty space |
+| `#` | Dark metal | Outlines/frames |
+| `=` | Mid metal | Body panels |
+| `-` | Light metal | Highlights |
+| `e` | Very dark | Edge rivets |
+| `w` | White | Barrel bore |
+| `G/g/o` | Greens | Basic tower |
+| `Y/y/l` | Yellows | Sniper tower |
+| `@` | Red/orange | Power indicator |
+| `!` | Yellow-white | Muzzle flash |
+
+### Special Markers (Not Rendered)
+
+| Marker | Purpose |
+|--------|---------|
+| `A` | Anchor - where barrel attaches to base |
+| `P` | Pivot - barrel rotation point |
+| `T` | Tip - muzzle flash position |
+
+Only the **first occurrence** of each marker is used.
+
+### Creating Symmetric Sprites
+
+For 16x16 base sprites:
+1. Every row must be exactly 16 characters
+2. Mirror pattern around columns 7-8 boundary
+3. Single `A` marker at center (around row 6-7)
+4. Pad consistently: `....content....`
+
+Example structure:
+```
+................  (row 0: 16 dots)
+.....######.....  (row 1: 5 + 6 + 5 = 16)
+....#-e==e-#....  (row 2: 4 + 8 + 4 = 16)
+```
+
+### Usage
+
+```lua
+local PixelArt = require("src.rendering.pixel_art")
+
+-- Draw a tower
+PixelArt.drawTower(towerType, x, y, barrelRotation, recoilOffset)
+
+-- Draw a projectile
+PixelArt.drawProjectile(towerType, x, y, angle, scale)
+
+-- Draw muzzle flash
+PixelArt.drawMuzzleFlash(towerType, x, y, barrelRotation)
+```
+
+---
+
+## Procedural Creep Rendering
+
+Creeps (enemies) use a **procedural pixel-art system** that creates organic, animated shapes without pre-drawn sprites. The system maintains pixel-perfect aesthetics while allowing each creep to have a unique, living appearance.
+
+### Core Concept: Animated Boundary
+
+Instead of moving individual pixels (which creates gaps), the system:
+
+1. **Generates a pixel pool** at spawn — all potential pixels within an expanded radius
+2. **Animates the boundary** at draw time using time-varying noise
+3. **Shows/hides whole pixels** based on whether they fall inside the current boundary
+
+This keeps pixels on their grid positions while the membrane appears to breathe and undulate.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  SPAWN TIME                    DRAW TIME (each frame)  │
+│                                                         │
+│  ┌─────────────┐               ┌─────────────┐         │
+│  │ Generate    │               │ Calculate   │         │
+│  │ pixel pool  │ ────────────► │ animated    │         │
+│  │ (expanded)  │   stored      │ boundary    │         │
+│  └─────────────┘               └─────────────┘         │
+│        │                              │                │
+│        ▼                              ▼                │
+│  Each pixel stores:            For each pixel:         │
+│  - position (relX, relY)       - Is it inside boundary?│
+│  - angle from center           - Yes → draw it         │
+│  - base edge noise             - No → skip it          │
+│  - random seeds                - Near edge → glow color│
+└─────────────────────────────────────────────────────────┘
+```
+
+### Config Values (in `Config.VOID_SPAWN`)
+
+| Value | Purpose | Typical Range |
+|-------|---------|---------------|
+| `pixelSize` | Size of each "pixel" in the sprite | 2-4 |
+| `distortionFrequency` | How jagged the base shape is | 1.0-3.0 |
+| `wobbleSpeed` | Animation speed of edge undulation | 1.0-4.0 |
+| `wobbleFrequency` | Number of "bumps" around the edge | 2.0-5.0 |
+| `wobbleAmount` | How much the boundary moves | 0.2-0.5 |
+| `wobbleFalloff` | Inner radius unaffected by wobble (0-1) | 0.3-0.6 |
+| `swirlSpeed` | Interior color animation speed | 0.5-2.0 |
+| `pulseSpeed` | Edge glow pulse rate | 1.0-3.0 |
+
+### Creating New Creep Variants
+
+To add a new creep type with different visual style:
+
+1. **Add config in `Config.CREEPS`** (stats: hp, speed, reward, size)
+
+2. **Add visual config** (either extend `VOID_SPAWN` or create new section):
+
+```lua
+Config.FLYING_CREEP = {
+    pixelSize = 2,              -- Smaller pixels = more detail
+    distortionFrequency = 1.5,  -- Smoother edges
+    wobbleSpeed = 4.0,          -- Faster flutter
+    wobbleAmount = 0.3,         -- Subtle movement
+    wobbleFalloff = 0.5,
+    -- ... color palette ...
+}
+```
+
+3. **Override `generatePixels()` for different shapes**:
+
+```lua
+-- Example: Elongated flying creep
+local aspectRatio = 1.5  -- Wider than tall
+local adjustedRelX = relX / aspectRatio
+local dist = math.sqrt(adjustedRelX^2 + relY^2)
+```
+
+4. **Override color logic in `draw()` for different effects**:
+   - Different color palettes
+   - Wing shimmer effects
+   - Transparency patterns
+   - Trail effects
+
+### Visual Effect Ideas for Future Creeps
+
+| Creep Type | Shape Modification | Color Effect |
+|------------|-------------------|--------------|
+| **Flying** | Elongated, wing appendages | Shimmer, transparency |
+| **Armored** | Hexagonal boundary | Metallic highlights |
+| **Swarm** | Tiny, minimal wobble | Synchronized pulse |
+| **Boss** | Large, slow wobble | Multiple color layers |
+| **Ghost** | High wobble, low falloff | Fade at edges |
+| **Splitter** | Symmetric halves | Split color zones |
+
+### Key Files
+
+- `src/entities/creep.lua` — Creep entity with procedural rendering
+- `src/rendering/procedural.lua` — Shared noise functions (fbm, hash)
+- `src/config.lua` — All visual tuning values
 
 ---
 
@@ -431,6 +620,45 @@ StateMachine.transition("playing")
 
 ---
 
+## Keyboard Shortcuts
+
+Press `~` (backtick/tilde) in-game to see all keyboard shortcuts.
+
+### Current Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `1` | Select Wall tower |
+| `2` | Select Turret tower |
+| `3` | Select Sniper tower |
+| `Q` | Buy Auto-Clicker upgrade |
+| `S` | Cycle game speed |
+| `P` | Open settings menu |
+| `L` | Toggle lighting |
+| `G` | Cycle floating numbers style |
+| `ESC` | Cancel / Deselect / Quit |
+| `~` | Toggle shortcuts overlay |
+
+### Adding a New Keyboard Shortcut
+
+When adding a new keyboard shortcut, you **must update two places**:
+
+1. **`src/init.lua`** — Add the key handler in `Game.keypressed(key)`
+2. **`src/ui/shortcuts.lua`** — Add the shortcut to the `SHORTCUTS` table
+
+The `SHORTCUTS` table in `shortcuts.lua` defines what appears in the overlay:
+
+```lua
+local SHORTCUTS = {
+    { category = "CATEGORY NAME" },           -- Section header
+    { key = "X", description = "Do thing" },  -- Shortcut entry
+}
+```
+
+This keeps the in-game overlay synchronized with actual functionality.
+
+---
+
 ## Adding New Features
 
 ### Adding a New Tower
@@ -496,7 +724,7 @@ local gridX, gridY = Grid.screenToGrid(screenX, screenY)
 ### Phase 1: Core Loop (Current)
 
 - [x] Grid system with tower placement
-- [x] 4 tower types (Turret, Rapid, Sniper, Cannon)
+- [x] 2 tower types (Turret, Sniper) with pixel art sprites
 - [x] 4 enemy types (Triangle, Square, Pentagon, Hexagon)
 - [x] A* pathfinding with flow fields
 - [x] Basic economy (gold, income ticks)

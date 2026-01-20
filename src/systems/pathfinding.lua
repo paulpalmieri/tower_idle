@@ -75,14 +75,14 @@ function PriorityQueue:bubbleDown(index)
 end
 
 -- Heuristic: Manhattan distance
-local function heuristic(x1, y1, x2, y2)
+local function _heuristic(x1, y1, x2, y2)
     return math.abs(x1 - x2) + math.abs(y1 - y2)
 end
 
 -- Check if a cell is walkable (for creeps)
 -- Walkable: empty (0), spawn zone (2), base zone (3)
 -- Not walkable: tower (1)
-local function isWalkable(grid, x, y)
+local function _isWalkable(grid, x, y)
     local cols = grid.getCols()
     local rows = grid.getRows()
     if x < 1 or x > cols or y < 1 or y > rows then
@@ -94,7 +94,7 @@ local function isWalkable(grid, x, y)
 end
 
 -- Get neighbors (4-directional)
-local function getNeighbors(grid, x, y)
+local function _getNeighbors(grid, x, y)
     local neighbors = {}
     local directions = {
         {0, -1},  -- up
@@ -105,7 +105,7 @@ local function getNeighbors(grid, x, y)
 
     for _, dir in ipairs(directions) do
         local nx, ny = x + dir[1], y + dir[2]
-        if isWalkable(grid, nx, ny) then
+        if _isWalkable(grid, nx, ny) then
             table.insert(neighbors, {x = nx, y = ny})
         end
     end
@@ -118,7 +118,7 @@ end
 -- grid: the Grid module (with getCells, getCols, getRows functions)
 function Pathfinding.findPath(grid, startX, startY, goalX, goalY)
     -- Quick check: if goal is not walkable, no path
-    if not isWalkable(grid, goalX, goalY) then
+    if not _isWalkable(grid, goalX, goalY) then
         return nil
     end
 
@@ -130,7 +130,7 @@ function Pathfinding.findPath(grid, startX, startY, goalX, goalY)
 
     local startKey = startY .. "," .. startX
     gScore[startKey] = 0
-    fScore[startKey] = heuristic(startX, startY, goalX, goalY)
+    fScore[startKey] = _heuristic(startX, startY, goalX, goalY)
 
     openSet:push({x = startX, y = startY}, fScore[startKey])
 
@@ -153,7 +153,7 @@ function Pathfinding.findPath(grid, startX, startY, goalX, goalY)
 
         closedSet[currentKey] = true
 
-        local neighbors = getNeighbors(grid, current.x, current.y)
+        local neighbors = _getNeighbors(grid, current.x, current.y)
         for _, neighbor in ipairs(neighbors) do
             local neighborKey = neighbor.y .. "," .. neighbor.x
 
@@ -163,7 +163,7 @@ function Pathfinding.findPath(grid, startX, startY, goalX, goalY)
                 if tentativeG < (gScore[neighborKey] or math.huge) then
                     cameFrom[neighborKey] = current
                     gScore[neighborKey] = tentativeG
-                    fScore[neighborKey] = tentativeG + heuristic(neighbor.x, neighbor.y, goalX, goalY)
+                    fScore[neighborKey] = tentativeG + _heuristic(neighbor.x, neighbor.y, goalX, goalY)
 
                     openSet:push(neighbor, fScore[neighborKey])
                 end
@@ -177,27 +177,45 @@ end
 
 -- Find path from spawn point to base
 -- Returns the path or nil if no path exists
+-- Tries to reach ANY cell in the base row (not just center)
 function Pathfinding.findPathToBase(grid, spawnX, spawnY)
     local cols = grid.getCols()
     local baseRow = grid.getBaseRow()
 
-    -- Target center of base row
-    local baseX = math.floor(cols / 2)
+    -- Try to reach any cell in the base row (prefer center, but accept any)
+    local baseX = math.floor((cols + 1) / 2)  -- Center column (4 for 7 cols)
 
-    return Pathfinding.findPath(grid, spawnX, spawnY, baseX, baseRow)
+    -- First try center
+    local path = Pathfinding.findPath(grid, spawnX, spawnY, baseX, baseRow)
+    if path then return path end
+
+    -- Try other columns in the base row
+    for x = 1, cols do
+        if x ~= baseX then
+            path = Pathfinding.findPath(grid, spawnX, spawnY, x, baseRow)
+            if path then return path end
+        end
+    end
+
+    return nil
 end
 
--- Check if any path exists from spawn to base
+-- Check if any path exists from grid entry (row 1) to base
 -- Used to prevent blocking placements
+-- Returns true if at least one column in row 1 can reach the base
 function Pathfinding.hasValidPath(grid)
     local cols = grid.getCols()
-    local spawnRow = Config.SPAWN_ROWS  -- Bottom of spawn zone
 
-    -- Check from center of spawn zone
-    local spawnX = math.floor(cols / 2)
+    -- Check from every column in row 1 (where creeps enter from buffer)
+    -- A valid path must exist from at least one entry point
+    for x = 1, cols do
+        local path = Pathfinding.findPathToBase(grid, x, 1)
+        if path then
+            return true  -- Found at least one valid path
+        end
+    end
 
-    local path = Pathfinding.findPathToBase(grid, spawnX, spawnRow)
-    return path ~= nil
+    return false  -- No path from any column
 end
 
 -- Validate tower placement won't block all paths
@@ -228,12 +246,16 @@ function Pathfinding.computeFlowField(grid)
     local cols = grid.getCols()
     local rows = grid.getRows()
     local baseRow = grid.getBaseRow()
-    local baseX = math.floor(cols / 2)
 
-    -- BFS from base to all cells
-    local queue = {{x = baseX, y = baseRow}}
+    -- BFS from ALL base cells to all cells (multi-source BFS)
+    local queue = {}
     local distance = {}
-    distance[baseRow .. "," .. baseX] = 0
+
+    -- Initialize with all base row cells as sources
+    for x = 1, cols do
+        table.insert(queue, {x = x, y = baseRow})
+        distance[baseRow .. "," .. x] = 0
+    end
 
     local directions = {
         {0, -1},  -- up
@@ -254,7 +276,7 @@ function Pathfinding.computeFlowField(grid)
             local nx, ny = current.x + dir[1], current.y + dir[2]
             local neighborKey = ny .. "," .. nx
 
-            if isWalkable(grid, nx, ny) and not distance[neighborKey] then
+            if _isWalkable(grid, nx, ny) and not distance[neighborKey] then
                 distance[neighborKey] = currentDist + 1
                 table.insert(queue, {x = nx, y = ny})
             end

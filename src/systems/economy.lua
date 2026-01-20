@@ -13,10 +13,7 @@ local state = {
     lives = 0,
     incomeTimer = 0,
     sent = {
-        triangle = 0,
-        square = 0,
-        pentagon = 0,
-        hexagon = 0,
+        voidSpawn = 0,
     },
 }
 
@@ -25,7 +22,7 @@ function Economy.init()
     state.income = Config.BASE_INCOME
     state.lives = Config.STARTING_LIVES
     state.incomeTimer = 0
-    state.sent = { triangle = 0, square = 0, pentagon = 0, hexagon = 0 }
+    state.sent = { voidSpawn = 0 }
 end
 
 function Economy.update(dt)

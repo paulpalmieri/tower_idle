@@ -1,7 +1,13 @@
 -- src/ui/panel.lua
--- Right-side UI panel for tower selection and upgrades
+-- Right-side UI panel with minimalist 8-bit aesthetic
+-- Compact layout: unified stats/void, tower cards, collapsible upgrades
 
 local Config = require("src.config")
+local EventBus = require("src.core.event_bus")
+local Fonts = require("src.rendering.fonts")
+local PixelFrames = require("src.ui.pixel_frames")
+local PixelArt = require("src.rendering.pixel_art")
+local TurretConcepts = require("src.rendering.turret_concepts")
 
 local Panel = {}
 
@@ -9,35 +15,92 @@ local state = {
     x = 0,
     width = 0,
     height = 0,
-    selectedTower = "wall",
+    selectedTower = nil,
     towerButtons = {},
     upgradeButtons = {},
     hoverButton = nil,
     upgradeLevels = {
         autoClicker = 0,
     },
+    upgradesExpanded = false,  -- Collapsible upgrades state
+    upgradesHeaderBounds = nil, -- Click area for expand/collapse
+    -- Dynamic layout positions
+    layout = {
+        statsY = 0,
+        statsHeight = 0,
+        towersY = 0,
+        towersHeight = 0,
+        upgradesY = 0,
+        upgradesHeight = 0,
+    },
+    -- Cached values from events
+    cache = {
+        gold = 0,
+        income = 0,
+        incomeProgress = 0,
+        lives = 0,
+        waveNumber = 0,
+    },
 }
 
 -- Tower types in order
-local TOWER_ORDER = {"wall", "basic", "rapid", "sniper", "cannon"}
-local TOWER_KEYS = {"1", "2", "3", "4", "5"}
+local TOWER_ORDER = {"wall", "void_orb", "void_ring", "void_bolt", "void_eye", "void_star"}
+local TOWER_KEYS = {"1", "2", "3", "4", "5", "6"}
 
 -- Upgrade types in order
 local UPGRADE_ORDER = {"autoClicker"}
 local UPGRADE_KEYS = {"Q"}
+
+-- Calculate dynamic layout based on content
+local function _calculateLayout(height)
+    local padding = Config.UI.padding
+    local buttonHeight = Config.UI.buttonHeight
+    local buttonSpacing = Config.UI.buttonSpacing
+    local sectionSpacing = Config.UI.LAYOUT.sectionSpacing
+
+    -- Stats section (combined stats + void bar)
+    local statsHeight = Config.UI.LAYOUT.statsHeight
+
+    -- Tower cards
+    local towerCount = #TOWER_ORDER
+    local towersHeight = towerCount * buttonHeight + (towerCount - 1) * buttonSpacing
+
+    -- Upgrades section (collapsible)
+    local upgradesHeaderHeight = 28
+    local upgradeCount = #UPGRADE_ORDER
+    local upgradesContentHeight = upgradeCount * buttonHeight + (upgradeCount - 1) * buttonSpacing
+    local upgradesHeight = state.upgradesExpanded and (upgradesHeaderHeight + upgradesContentHeight + buttonSpacing) or upgradesHeaderHeight
+
+    -- Position sections from top
+    local y = padding
+
+    state.layout.statsY = y
+    state.layout.statsHeight = statsHeight
+    y = y + statsHeight + sectionSpacing
+
+    state.layout.towersY = y
+    state.layout.towersHeight = towersHeight
+    y = y + towersHeight + sectionSpacing
+
+    state.layout.upgradesY = y
+    state.layout.upgradesHeight = upgradesHeight
+end
 
 function Panel.init(playAreaWidth, panelWidth, height)
     state.x = playAreaWidth
     state.width = panelWidth
     state.height = height
 
-    -- Build tower button layouts (top half)
+    -- Calculate dynamic layout
+    _calculateLayout(height)
+
     local padding = Config.UI.padding
     local buttonHeight = Config.UI.buttonHeight
     local buttonSpacing = Config.UI.buttonSpacing
     local buttonWidth = panelWidth - padding * 2
 
-    local towerStartY = Config.UI.panel.towerSectionY
+    -- Build tower button layouts
+    local towerStartY = state.layout.towersY
 
     state.towerButtons = {}
     for i, towerType in ipairs(TOWER_ORDER) do
@@ -51,8 +114,16 @@ function Panel.init(playAreaWidth, panelWidth, height)
         }
     end
 
-    -- Build upgrade button layouts (bottom half)
-    local upgradeStartY = height / 2 + Config.UI.panel.enemySectionYOffset
+    -- Upgrades header bounds (for expand/collapse click)
+    state.upgradesHeaderBounds = {
+        x = state.x + padding,
+        y = state.layout.upgradesY,
+        width = buttonWidth,
+        height = 28,
+    }
+
+    -- Build upgrade button layouts (below header when expanded)
+    local upgradeStartY = state.layout.upgradesY + 28 + buttonSpacing
 
     state.upgradeButtons = {}
     for i, upgradeType in ipairs(UPGRADE_ORDER) do
@@ -68,6 +139,36 @@ function Panel.init(playAreaWidth, panelWidth, height)
 
     -- Reset upgrade levels
     state.upgradeLevels = { autoClicker = 0 }
+
+    -- Initialize cache with starting values
+    state.cache = {
+        gold = Config.STARTING_GOLD,
+        income = Config.BASE_INCOME,
+        incomeProgress = 0,
+        lives = Config.STARTING_LIVES,
+        waveNumber = 0,
+    }
+
+    -- Subscribe to events for cache updates
+    EventBus.on("gold_changed", function(data)
+        state.cache.gold = data.total
+    end)
+
+    EventBus.on("income_tick", function(data)
+        state.cache.gold = data.total
+    end)
+
+    EventBus.on("creep_sent", function(data)
+        state.cache.income = data.income
+    end)
+
+    EventBus.on("life_lost", function(data)
+        state.cache.lives = data.remaining
+    end)
+
+    EventBus.on("wave_started", function(data)
+        state.cache.waveNumber = data.waveNumber
+    end)
 end
 
 function Panel.update(mouseX, mouseY)
@@ -82,17 +183,35 @@ function Panel.update(mouseX, mouseY)
         end
     end
 
-    -- Check upgrade buttons
-    for _, btn in ipairs(state.upgradeButtons) do
-        if mouseX >= btn.x and mouseX <= btn.x + btn.width and
-           mouseY >= btn.y and mouseY <= btn.y + btn.height then
-            state.hoverButton = btn
-            return
+    -- Check upgrade buttons (only if expanded)
+    if state.upgradesExpanded then
+        for _, btn in ipairs(state.upgradeButtons) do
+            if mouseX >= btn.x and mouseX <= btn.x + btn.width and
+               mouseY >= btn.y and mouseY <= btn.y + btn.height then
+                state.hoverButton = btn
+                return
+            end
         end
+    end
+
+    -- Check upgrades header for hover
+    local hdr = state.upgradesHeaderBounds
+    if hdr and mouseX >= hdr.x and mouseX <= hdr.x + hdr.width and
+       mouseY >= hdr.y and mouseY <= hdr.y + hdr.height then
+        state.hoverButton = { type = "upgradesHeader" }
     end
 end
 
 function Panel.handleClick(x, y, economy)
+    -- Check upgrades header (expand/collapse)
+    local hdr = state.upgradesHeaderBounds
+    if hdr and x >= hdr.x and x <= hdr.x + hdr.width and
+       y >= hdr.y and y <= hdr.y + hdr.height then
+        state.upgradesExpanded = not state.upgradesExpanded
+        _calculateLayout(state.height)
+        return nil
+    end
+
     -- Check tower buttons
     for _, btn in ipairs(state.towerButtons) do
         if x >= btn.x and x <= btn.x + btn.width and
@@ -102,18 +221,20 @@ function Panel.handleClick(x, y, economy)
         end
     end
 
-    -- Check upgrade buttons
-    for _, btn in ipairs(state.upgradeButtons) do
-        if x >= btn.x and x <= btn.x + btn.width and
-           y >= btn.y and y <= btn.y + btn.height then
-            local cost = Panel.getUpgradeCost(btn.type)
-            local upgradeConfig = Config.UPGRADES.panel[btn.type]
-            local currentLevel = state.upgradeLevels[btn.type] or 0
+    -- Check upgrade buttons (only if expanded)
+    if state.upgradesExpanded then
+        for _, btn in ipairs(state.upgradeButtons) do
+            if x >= btn.x and x <= btn.x + btn.width and
+               y >= btn.y and y <= btn.y + btn.height then
+                local cost = Panel.getUpgradeCost(btn.type)
+                local upgradeConfig = Config.UPGRADES.panel[btn.type]
+                local currentLevel = state.upgradeLevels[btn.type] or 0
 
-            if currentLevel < upgradeConfig.maxLevel and economy.canAfford(cost) then
-                return {action = "buy_upgrade", type = btn.type, cost = cost}
+                if currentLevel < upgradeConfig.maxLevel and economy.canAfford(cost) then
+                    return {action = "buy_upgrade", type = btn.type, cost = cost}
+                end
+                return nil
             end
-            return nil
         end
     end
 
@@ -127,7 +248,7 @@ function Panel.getUpgradeCost(upgradeType)
 
     local currentLevel = state.upgradeLevels[upgradeType] or 0
     if currentLevel >= upgradeConfig.maxLevel then
-        return 0  -- Max level
+        return 0
     end
 
     return math.floor(upgradeConfig.baseCost * (upgradeConfig.costMultiplier ^ currentLevel))
@@ -161,163 +282,300 @@ function Panel.getAutoClickInterval()
     return config.baseInterval - ((level - 1) * config.intervalReduction)
 end
 
-function Panel.draw(economy)
-    -- Panel background
-    love.graphics.setColor(Config.COLORS.panel)
-    love.graphics.rectangle("fill", state.x, 0, state.width, state.height)
+-- Draw tower sprite thumbnail (compact scale)
+local function _drawTowerThumbnail(towerType, x, y, canAfford)
+    local towerConfig = Config.TOWERS[towerType]
+    local artConfig = Config.PIXEL_ART.TOWERS[towerType]
+    local thumbScale = Config.UI.panel.iconScale
 
-    -- Border
-    love.graphics.setColor(Config.COLORS.panelBorder)
-    love.graphics.setLineWidth(2)
-    love.graphics.line(state.x, 0, state.x, state.height)
-
-    -- TOWERS title
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.printf("TOWERS", state.x, 20, state.width, "center")
-
-    -- Draw tower buttons
-    for _, btn in ipairs(state.towerButtons) do
-        local towerConfig = Config.TOWERS[btn.type]
-        local canAfford = economy.canAfford(towerConfig.cost)
-        local isSelected = state.selectedTower == btn.type
-        local isHovered = state.hoverButton == btn
-
-        -- Button background
-        if isSelected then
-            love.graphics.setColor(Config.UI.panel.buttonColors.selected)
-        elseif isHovered and canAfford then
-            love.graphics.setColor(Config.UI.panel.buttonColors.hovered)
+    -- Check if tower has a voidVariant (use TurretConcepts)
+    if towerConfig and towerConfig.voidVariant then
+        if not canAfford then
+            love.graphics.setColor(0.4, 0.4, 0.4)
         else
-            love.graphics.setColor(Config.UI.panel.buttonColors.default)
+            love.graphics.setColor(1, 1, 1)
         end
-        love.graphics.rectangle("fill", btn.x, btn.y, btn.width, btn.height, 4)
-
-        -- Selection border
-        if isSelected then
-            love.graphics.setColor(0, 1, 0)
-            love.graphics.setLineWidth(2)
-            love.graphics.rectangle("line", btn.x, btn.y, btn.width, btn.height, 4)
+        TurretConcepts.drawThumbnail(towerConfig.voidVariant, x, y, 1.5)
+    elseif artConfig and artConfig.base then
+        -- Use pixel art for wall and other towers with sprites
+        if not canAfford then
+            love.graphics.setColor(0.4, 0.4, 0.4)
+        else
+            love.graphics.setColor(1, 1, 1)
         end
-
-        -- Tower icon (colored circle)
-        local iconX = btn.x + Config.UI.panel.iconXOffset
-        local iconY = btn.y + btn.height / 2
+        PixelArt.drawTower(towerType, x, y, 0, 0, thumbScale)
+    else
+        -- Fallback to simple circle
         if canAfford then
             love.graphics.setColor(towerConfig.color)
         else
             love.graphics.setColor(0.3, 0.3, 0.3)
         end
-        love.graphics.circle("fill", iconX, iconY, Config.UI.panel.iconRadius)
+        love.graphics.circle("fill", x, y, 10)
+    end
+end
 
-        -- Tower name
-        if canAfford then
-            love.graphics.setColor(Config.COLORS.textPrimary)
-        else
-            love.graphics.setColor(Config.COLORS.textDisabled)
-        end
-        love.graphics.print(towerConfig.name, btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.textYOffset)
+-- Draw clean border between play area and panel
+local function _drawPanelBorder()
+    local x = state.x
+    local dark = Config.COLORS.frameDark
+    local mid = Config.COLORS.frameMid
+    local accent = Config.COLORS.frameAccent
 
-        -- Tower cost
-        if canAfford then
-            love.graphics.setColor(Config.COLORS.gold)
-        else
-            love.graphics.setColor(Config.COLORS.textDisabled)
-        end
-        love.graphics.print(towerConfig.cost .. "g", btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.costYOffset)
+    -- Main border line (2px)
+    love.graphics.setColor(dark)
+    love.graphics.rectangle("fill", x, 0, 2, state.height)
 
-        -- Hotkey
+    -- Subtle highlight
+    love.graphics.setColor(mid[1], mid[2], mid[3], 0.5)
+    love.graphics.rectangle("fill", x + 2, 0, 1, state.height)
+
+    -- Sparse accent dots for texture
+    love.graphics.setColor(accent[1], accent[2], accent[3], 0.4)
+    for py = 20, state.height - 20, 32 do
+        love.graphics.rectangle("fill", x, py, 2, 2)
+    end
+end
+
+-- Draw unified stats section (gold, lives, wave, speed, void bar)
+local function _drawStatsSection(economy, voidEntity, waves, speedLabel)
+    local padding = Config.UI.padding
+    local sectionX = state.x + padding
+    local sectionY = state.layout.statsY
+    local sectionWidth = state.width - padding * 2
+    local sectionHeight = state.layout.statsHeight
+
+    -- Clean frame
+    PixelFrames.draw8BitFrame(sectionX, sectionY, sectionWidth, sectionHeight, "hud")
+
+    local contentX = sectionX + 10
+    local y = sectionY + 10
+
+    -- Row 1: Gold (large) | +income/tick
+    Fonts.setFont("medium")
+    love.graphics.setColor(Config.COLORS.gold)
+    love.graphics.print(tostring(economy.getGold()) .. "g", contentX, y)
+
+    Fonts.setFont("small")
+    love.graphics.setColor(Config.COLORS.income)
+    love.graphics.printf("+" .. economy.getIncome() .. "/tick", sectionX, y + 4, sectionWidth - 12, "right")
+
+    y = y + 22
+
+    -- Row 2: Lives | Wave | Speed
+    -- Lives with heart indicator
+    love.graphics.setColor(Config.COLORS.lives)
+    Fonts.setFont("small")
+    love.graphics.print("HP", contentX, y + 2)
+    Fonts.setFont("medium")
+    love.graphics.print(tostring(economy.getLives()), contentX + 22, y)
+
+    -- Wave number
+    Fonts.setFont("small")
+    love.graphics.setColor(Config.COLORS.textSecondary)
+    love.graphics.print("WAVE", contentX + 60, y + 2)
+    Fonts.setFont("medium")
+    love.graphics.setColor(Config.COLORS.textPrimary)
+    love.graphics.print(tostring(waves.getWaveNumber()), contentX + 95, y)
+
+    -- Speed indicator (right-aligned)
+    local speedText = speedLabel or "x1"
+    Fonts.setFont("small")
+    if speedLabel == "||" then
+        love.graphics.setColor(Config.COLORS.ruby)
+    elseif speedLabel == "x5" then
+        love.graphics.setColor(Config.COLORS.emerald)
+    else
         love.graphics.setColor(Config.COLORS.textSecondary)
-        love.graphics.print("[" .. btn.hotkey .. "]", btn.x + btn.width - Config.UI.panel.hotkeyXOffset, btn.y + Config.UI.panel.textYOffset)
+    end
+    love.graphics.printf(speedText, sectionX, y + 2, sectionWidth - 12, "right")
 
-        -- Stats (damage/range or BLOCKS for walls)
-        love.graphics.setColor(Config.COLORS.textSecondary)
-        local statsText
-        if towerConfig.fireRate == 0 then
-            statsText = "BLOCKS"
-        else
-            statsText = "DMG:" .. towerConfig.damage .. " RNG:" .. towerConfig.range
-        end
-        love.graphics.print(statsText, btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.statsYOffset)
+    y = y + 24
+
+    -- Row 3: VOID bar with anger level
+    if voidEntity then
+        Fonts.setFont("small")
+        love.graphics.setColor(Config.COLORS.amethyst)
+        love.graphics.print("VOID", contentX, y + 1)
+
+        -- Health bar (8 segments)
+        local barX = contentX + 40
+        local barWidth = sectionWidth - 95
+        local barHeight = 12
+        local healthPercent = voidEntity:getHealthPercent()
+
+        PixelFrames.drawSegmentedBar(barX, y, barWidth, barHeight, healthPercent, 8, Config.COLORS.amethyst, {0.12, 0.06, 0.14})
+
+        -- Anger level indicator
+        love.graphics.setColor(Config.COLORS.gold)
+        love.graphics.printf("Lv" .. voidEntity.currentAnger, sectionX, y + 1, sectionWidth - 12, "right")
+    end
+end
+
+-- Draw tower card with icon and stats
+local function _drawTowerCard(btn, economy)
+    local towerConfig = Config.TOWERS[btn.type]
+    local canAfford = economy.canAfford(towerConfig.cost)
+    local isSelected = state.selectedTower == btn.type
+    local isHovered = state.hoverButton == btn
+
+    -- Card frame style
+    local styleName = "standard"
+    if not canAfford then
+        styleName = "disabled"
+    elseif isSelected then
+        styleName = "selected"
+    elseif isHovered then
+        styleName = "highlight"
     end
 
-    -- UPGRADES title
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.printf("UPGRADES", state.x, state.height / 2, state.width, "center")
+    -- Selection glow
+    if isSelected then
+        love.graphics.setColor(Config.COLORS.gold[1], Config.COLORS.gold[2], Config.COLORS.gold[3], 0.12)
+        love.graphics.rectangle("fill", btn.x - 2, btn.y - 2, btn.width + 4, btn.height + 4)
+    end
 
-    -- Draw upgrade buttons
-    for _, btn in ipairs(state.upgradeButtons) do
-        local upgradeConfig = Config.UPGRADES.panel[btn.type]
-        local currentLevel = state.upgradeLevels[btn.type] or 0
-        local cost = Panel.getUpgradeCost(btn.type)
-        local isMaxLevel = currentLevel >= upgradeConfig.maxLevel
-        local canAfford = not isMaxLevel and economy.canAfford(cost)
-        local isHovered = state.hoverButton == btn
+    PixelFrames.draw8BitCard(btn.x, btn.y, btn.width, btn.height, styleName)
 
-        -- Button background
-        if isHovered and canAfford then
-            love.graphics.setColor(Config.UI.panel.buttonColors.enemyHovered)
-        else
-            love.graphics.setColor(Config.UI.panel.buttonColors.default)
-        end
-        love.graphics.rectangle("fill", btn.x, btn.y, btn.width, btn.height, 4)
+    -- Icon (centered vertically, left side)
+    local iconScale = Config.UI.panel.iconScale
+    local iconSize = 16 * iconScale  -- 32px at 2.0 scale
+    local iconX = btn.x + 6 + iconSize / 2
+    local iconY = btn.y + btn.height / 2
+    _drawTowerThumbnail(btn.type, iconX, iconY, canAfford)
 
-        -- Upgrade icon (gear-like circle)
-        local iconX = btn.x + Config.UI.panel.iconXOffset
-        local iconY = btn.y + btn.height / 2
-        if canAfford then
-            love.graphics.setColor(Config.COLORS.income)
-        elseif isMaxLevel then
-            love.graphics.setColor(Config.COLORS.gold)
-        else
-            love.graphics.setColor(0.3, 0.3, 0.3)
-        end
-        love.graphics.circle("fill", iconX, iconY, Config.UI.panel.iconRadius)
+    -- Text area starts after icon
+    local textX = btn.x + 6 + iconSize + 8
 
-        -- Level indicator inside icon
-        love.graphics.setColor(0, 0, 0)
-        love.graphics.printf(tostring(currentLevel), iconX - 10, iconY - 7, 20, "center")
+    -- Row 1: Name
+    Fonts.setFont("medium")
+    if isSelected then
+        love.graphics.setColor(Config.COLORS.gold)
+    elseif canAfford then
+        love.graphics.setColor(Config.COLORS.textPrimary)
+    else
+        love.graphics.setColor(Config.COLORS.textDisabled)
+    end
+    love.graphics.print(towerConfig.name, textX, btn.y + 8)
 
-        -- Upgrade name
-        if canAfford or isMaxLevel then
-            love.graphics.setColor(Config.COLORS.textPrimary)
-        else
-            love.graphics.setColor(Config.COLORS.textDisabled)
-        end
-        love.graphics.print(upgradeConfig.name, btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.textYOffset)
+    -- Cost (right-aligned, same row as name)
+    Fonts.setFont("small")
+    if canAfford then
+        love.graphics.setColor(Config.COLORS.gold)
+    else
+        love.graphics.setColor(Config.COLORS.textDisabled)
+    end
+    love.graphics.printf(towerConfig.cost .. "g", btn.x, btn.y + 10, btn.width - 22, "right")
 
-        -- Cost or MAX
-        if isMaxLevel then
-            love.graphics.setColor(Config.COLORS.gold)
-            love.graphics.print("MAX", btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.costYOffset)
-        else
-            if canAfford then
-                love.graphics.setColor(Config.COLORS.gold)
+    -- Hotkey (top-right corner, subtle)
+    love.graphics.setColor(Config.COLORS.textSecondary[1], Config.COLORS.textSecondary[2], Config.COLORS.textSecondary[3], 0.5)
+    love.graphics.print(btn.hotkey, btn.x + btn.width - 12, btn.y + 4)
+
+    -- Row 2: Stats
+    Fonts.setFont("small")
+    love.graphics.setColor(Config.COLORS.textSecondary)
+    local statsText
+    if towerConfig.fireRate == 0 then
+        statsText = "BLOCKS PATH"
+    else
+        statsText = "DMG:" .. towerConfig.damage .. "  RNG:" .. towerConfig.range
+    end
+    love.graphics.print(statsText, textX, btn.y + 30)
+end
+
+-- Draw collapsible upgrades section
+local function _drawUpgradesSection(economy)
+    local hdr = state.upgradesHeaderBounds
+    local isHovered = state.hoverButton and state.hoverButton.type == "upgradesHeader"
+
+    -- Header row with expand/collapse arrow
+    local arrowChar = state.upgradesExpanded and "v" or ">"
+    local headerStyle = isHovered and "highlight" or "standard"
+
+    PixelFrames.draw8BitCard(hdr.x, hdr.y, hdr.width, hdr.height, headerStyle)
+
+    Fonts.setFont("small")
+    love.graphics.setColor(Config.COLORS.amethyst)
+    love.graphics.print(arrowChar .. " UPGRADES", hdr.x + 10, hdr.y + 7)
+
+    -- Badge showing count of upgrades
+    local upgradeCount = #UPGRADE_ORDER
+    love.graphics.setColor(Config.COLORS.textSecondary)
+    love.graphics.printf("(" .. upgradeCount .. ")", hdr.x, hdr.y + 7, hdr.width - 12, "right")
+
+    -- Draw upgrade buttons (only if expanded)
+    if state.upgradesExpanded then
+        for _, btn in ipairs(state.upgradeButtons) do
+            local upgradeConfig = Config.UPGRADES.panel[btn.type]
+            local currentLevel = state.upgradeLevels[btn.type] or 0
+            local cost = Panel.getUpgradeCost(btn.type)
+            local isMaxLevel = currentLevel >= upgradeConfig.maxLevel
+            local canAfford = not isMaxLevel and economy.canAfford(cost)
+            local isHover = state.hoverButton == btn
+
+            -- Card frame
+            local styleName = "standard"
+            if isMaxLevel then
+                styleName = "selected"
+            elseif not canAfford then
+                styleName = "disabled"
+            elseif isHover then
+                styleName = "highlight"
+            end
+
+            PixelFrames.draw8BitCard(btn.x, btn.y, btn.width, btn.height, styleName)
+
+            -- Upgrade name
+            local textX = btn.x + 12
+            Fonts.setFont("medium")
+            if canAfford or isMaxLevel then
+                love.graphics.setColor(Config.COLORS.textPrimary)
             else
                 love.graphics.setColor(Config.COLORS.textDisabled)
             end
-            love.graphics.print(cost .. "g", btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.costYOffset)
-        end
+            love.graphics.print(upgradeConfig.name, textX, btn.y + 8)
 
-        -- Effect description
-        love.graphics.setColor(Config.COLORS.income)
-        if btn.type == "autoClicker" then
-            if currentLevel == 0 then
-                love.graphics.print("Auto-click Void", btn.x + 100, btn.y + Config.UI.panel.costYOffset)
+            -- Cost or MAX (right-aligned)
+            Fonts.setFont("small")
+            if isMaxLevel then
+                love.graphics.setColor(Config.COLORS.gold)
+                love.graphics.printf("MAX", btn.x, btn.y + 10, btn.width - 12, "right")
             else
-                local interval = Panel.getAutoClickInterval()
-                love.graphics.print(string.format("%.1fs", interval), btn.x + 100, btn.y + Config.UI.panel.costYOffset)
+                if canAfford then
+                    love.graphics.setColor(Config.COLORS.gold)
+                else
+                    love.graphics.setColor(Config.COLORS.textDisabled)
+                end
+                love.graphics.printf(cost .. "g", btn.x, btn.y + 10, btn.width - 12, "right")
             end
+
+            -- Level indicator
+            love.graphics.setColor(Config.COLORS.textSecondary)
+            love.graphics.print("Lv" .. currentLevel .. "/" .. upgradeConfig.maxLevel, textX, btn.y + 30)
         end
-
-        -- Hotkey
-        love.graphics.setColor(Config.COLORS.textSecondary)
-        love.graphics.print("[" .. btn.hotkey .. "]", btn.x + btn.width - Config.UI.panel.hotkeyXOffset, btn.y + Config.UI.panel.textYOffset)
-
-        -- Level progress
-        love.graphics.setColor(Config.COLORS.textSecondary)
-        local levelText = "Lv " .. currentLevel .. "/" .. upgradeConfig.maxLevel
-        love.graphics.print(levelText, btn.x + Config.UI.panel.textXOffset, btn.y + Config.UI.panel.statsYOffset)
     end
+end
+
+function Panel.draw(economy, voidEntity, waves, speedLabel)
+    -- Panel background
+    love.graphics.setColor(Config.COLORS.panel)
+    love.graphics.rectangle("fill", state.x, 0, state.width, state.height)
+
+    -- Stylized border
+    _drawPanelBorder()
+
+    -- Unified stats section (gold, lives, wave, speed, void bar)
+    if economy and waves then
+        _drawStatsSection(economy, voidEntity, waves, speedLabel)
+    end
+
+    -- Tower cards (compact 2-row)
+    for _, btn in ipairs(state.towerButtons) do
+        _drawTowerCard(btn, economy)
+    end
+
+    -- Collapsible upgrades section
+    _drawUpgradesSection(economy)
 end
 
 function Panel.getSelectedTower()
@@ -325,11 +583,16 @@ function Panel.getSelectedTower()
 end
 
 function Panel.getSelectedTowerCost()
+    if not state.selectedTower then return 0 end
     return Config.TOWERS[state.selectedTower].cost
 end
 
 function Panel.selectTower(towerType)
     state.selectedTower = towerType
+end
+
+function Panel.isHoveringButton()
+    return state.hoverButton ~= nil
 end
 
 return Panel

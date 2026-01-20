@@ -32,7 +32,7 @@ function Waves.setAngerLevel(anger)
 end
 
 -- Build the spawn queue based on anger level
-local function buildQueue()
+local function _buildQueue()
     local queue = {}
 
     -- Get composition for current anger level (cap at max defined level)
@@ -65,11 +65,11 @@ local function buildQueue()
 end
 
 -- Start a new wave
-local function startWave()
+local function _startWave()
     state.waveNumber = state.waveNumber + 1
     state.waveTimer = 0
     state.spawning = true
-    state.spawnQueue = buildQueue()
+    state.spawnQueue = _buildQueue()
     state.spawnTimer = 0
 
     EventBus.emit("wave_started", {
@@ -80,7 +80,7 @@ local function startWave()
 end
 
 -- Spawn the next creep from the queue
-local function spawnNext()
+local function _spawnNext()
     if #state.spawnQueue == 0 then
         state.spawning = false
         return
@@ -89,12 +89,11 @@ local function spawnNext()
     -- Pop from queue
     local creepType = table.remove(state.spawnQueue, 1)
 
-    -- Random spawn column in spawn zone
+    -- Random spawn column from the void area
     local cols = Grid.getCols()
     local spawnCol = math.random(1, cols)
-    local spawnRow = 1  -- Top row
 
-    local x, y = Grid.gridToScreen(spawnCol, spawnRow)
+    local x, y = Grid.getSpawnPosition(spawnCol)
     local creep = Creep(x, y, creepType)
 
     EventBus.emit("spawn_creep", { creep = creep })
@@ -106,7 +105,7 @@ function Waves.update(dt, creeps)
         state.spawnTimer = state.spawnTimer + dt
         if state.spawnTimer >= Config.WAVE_SPAWN_INTERVAL then
             state.spawnTimer = state.spawnTimer - Config.WAVE_SPAWN_INTERVAL
-            spawnNext()
+            _spawnNext()
         end
 
         -- Check if wave is clear (no more queue and no creeps alive)
@@ -120,7 +119,7 @@ function Waves.update(dt, creeps)
 
         -- Start wave when timer expires
         if state.waveTimer >= Config.WAVE_DURATION then
-            startWave()
+            _startWave()
         end
     end
 end
