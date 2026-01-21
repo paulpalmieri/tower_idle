@@ -95,8 +95,9 @@ local function _calculateLayout(height)
     state.layout.upgradesHeight = upgradesHeight
 end
 
-function Panel.init(playAreaWidth, panelWidth, height)
-    state.x = playAreaWidth
+function Panel.init(canvasWidth, panelWidth, height)
+    -- Panel is now an overlay on the right side of the canvas
+    state.x = canvasWidth - panelWidth
     state.width = panelWidth
     state.height = height
 
@@ -727,8 +728,10 @@ local function _drawUpgradesSection(economy)
 end
 
 function Panel.draw(economy, voidEntity, waves, speedLabel)
-    -- Panel background
-    love.graphics.setColor(Config.COLORS.panel)
+    -- Panel background (semi-transparent overlay)
+    local panelColor = Config.COLORS.panel
+    local panelAlpha = Config.PANEL_ALPHA or 0.92
+    love.graphics.setColor(panelColor[1], panelColor[2], panelColor[3], panelAlpha)
     love.graphics.rectangle("fill", state.x, 0, state.width, state.height)
 
     -- Stylized border
@@ -771,6 +774,10 @@ end
 
 function Panel.isHoveringButton()
     return state.hoverButton ~= nil
+end
+
+function Panel.getX()
+    return state.x
 end
 
 return Panel

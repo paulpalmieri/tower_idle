@@ -48,8 +48,7 @@ end
 function Atmosphere.initParticles()
     particles = {}
 
-    local screenW = Config.SCREEN_WIDTH
-    local screenH = Config.SCREEN_HEIGHT
+    local screenW, screenH = Settings.getGameDimensions()
 
     -- Create fog wisps
     for _ = 1, FOG_PARTICLES.count do
@@ -82,8 +81,7 @@ end
 
 -- Update particle positions
 function Atmosphere.update(dt)
-    local screenW = Config.SCREEN_WIDTH
-    local screenH = Config.SCREEN_HEIGHT
+    local screenW, screenH = Settings.getGameDimensions()
     local time = love.timer.getTime()
 
     for _, p in ipairs(particles) do
@@ -143,8 +141,7 @@ end
 function Atmosphere.drawVignette()
     if not Settings.isVignetteEnabled() then return end
 
-    local screenW = Config.SCREEN_WIDTH
-    local screenH = Config.SCREEN_HEIGHT
+    local screenW, screenH = Settings.getGameDimensions()
 
     -- Draw corner shadows as overlapping rectangles with low alpha
     love.graphics.setBlendMode("alpha")
@@ -169,9 +166,8 @@ function Atmosphere.drawVignette()
         love.graphics.rectangle("fill", 0, screenH - size, screenW, size)
         -- Left edge
         love.graphics.rectangle("fill", 0, 0, size, screenH)
-        -- Right edge (stop before panel)
-        local playAreaW = screenW * Config.PLAY_AREA_RATIO
-        love.graphics.rectangle("fill", playAreaW - size, 0, size, screenH)
+        -- Right edge (full canvas width since panel now overlays)
+        love.graphics.rectangle("fill", screenW - size, 0, size, screenH)
     end
 
     love.graphics.setColor(1, 1, 1, 1)

@@ -5,6 +5,7 @@
 local Config = require("src.config")
 local Fonts = require("src.rendering.fonts")
 local PixelFrames = require("src.ui.pixel_frames")
+local Settings = require("src.ui.settings")
 
 local PauseMenu = {}
 
@@ -17,18 +18,13 @@ local state = {
     abandonButton = nil,
 }
 
-function PauseMenu.init()
-    state.visible = false
-    state.time = 0
-    state.hoverResume = false
-    state.hoverAbandon = false
-
-    -- Calculate button positions (stacked vertically, centered)
+local function _calculateLayout()
+    local gameW, gameH = Settings.getGameDimensions()
     local buttonWidth = 180
     local buttonHeight = 44
     local buttonSpacing = 16
-    local centerX = Config.SCREEN_WIDTH / 2
-    local centerY = Config.SCREEN_HEIGHT / 2
+    local centerX = gameW / 2
+    local centerY = gameH / 2
 
     state.resumeButton = {
         x = centerX - buttonWidth / 2,
@@ -43,6 +39,14 @@ function PauseMenu.init()
         width = buttonWidth,
         height = buttonHeight,
     }
+end
+
+function PauseMenu.init()
+    state.visible = false
+    state.time = 0
+    state.hoverResume = false
+    state.hoverAbandon = false
+    _calculateLayout()
 end
 
 function PauseMenu.show()
@@ -90,8 +94,10 @@ end
 function PauseMenu.draw()
     if not state.visible then return end
 
-    local screenW = Config.SCREEN_WIDTH
-    local screenH = Config.SCREEN_HEIGHT
+    -- Recalculate layout in case window dimensions changed
+    _calculateLayout()
+
+    local screenW, screenH = Settings.getGameDimensions()
 
     -- Darken background
     love.graphics.setColor(0, 0, 0, 0.85)

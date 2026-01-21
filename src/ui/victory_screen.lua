@@ -6,6 +6,7 @@ local Config = require("src.config")
 local Fonts = require("src.rendering.fonts")
 local PixelFrames = require("src.ui.pixel_frames")
 local Economy = require("src.systems.economy")
+local Settings = require("src.ui.settings")
 
 local VictoryScreen = {}
 
@@ -37,20 +38,14 @@ local function _formatNumber(num)
     end
 end
 
-function VictoryScreen.init()
-    state.visible = false
-    state.isVictory = true
-    state.time = 0
-    state.hoverSkillTree = false
-    state.hoverPlayAgain = false
-
-    -- Calculate button positions (side by side, centered)
+local function _calculateLayout()
+    local gameW, gameH = Settings.getGameDimensions()
     local buttonWidth = 140
     local buttonHeight = 40
     local buttonSpacing = 20
     local totalWidth = buttonWidth * 2 + buttonSpacing
-    local startX = (Config.SCREEN_WIDTH - totalWidth) / 2
-    local buttonY = Config.SCREEN_HEIGHT / 2 + 140
+    local startX = (gameW - totalWidth) / 2
+    local buttonY = gameH / 2 + 140
 
     state.skillTreeButton = {
         x = startX,
@@ -65,6 +60,15 @@ function VictoryScreen.init()
         width = buttonWidth,
         height = buttonHeight,
     }
+end
+
+function VictoryScreen.init()
+    state.visible = false
+    state.isVictory = true
+    state.time = 0
+    state.hoverSkillTree = false
+    state.hoverPlayAgain = false
+    _calculateLayout()
 end
 
 function VictoryScreen.show()
@@ -119,8 +123,10 @@ end
 function VictoryScreen.draw()
     if not state.visible then return end
 
-    local screenW = Config.SCREEN_WIDTH
-    local screenH = Config.SCREEN_HEIGHT
+    -- Recalculate layout in case window dimensions changed
+    _calculateLayout()
+
+    local screenW, screenH = Settings.getGameDimensions()
     local stats = Economy.getStats()
 
     -- Darken background

@@ -41,11 +41,49 @@ local function easeInQuad(t)
     return t * t
 end
 
+-- Draw a simple pixel heart (7x6 pixels)
+local function drawPixelHeart(x, y, scale, color, alpha)
+    local ps = 2 * scale  -- pixel size
+    -- Heart pattern (1 = filled, 0 = empty)
+    -- Row 0:  . # # . # # .
+    -- Row 1:  # # # # # # #
+    -- Row 2:  # # # # # # #
+    -- Row 3:  . # # # # # .
+    -- Row 4:  . . # # # . .
+    -- Row 5:  . . . # . . .
+    local pattern = {
+        {0,1,1,0,1,1,0},
+        {1,1,1,1,1,1,1},
+        {1,1,1,1,1,1,1},
+        {0,1,1,1,1,1,0},
+        {0,0,1,1,1,0,0},
+        {0,0,0,1,0,0,0},
+    }
+
+    love.graphics.setColor(color[1], color[2], color[3], alpha)
+    local heartW = 7 * ps
+    local heartH = 6 * ps
+    local startX = x - heartW / 2
+    local startY = y - heartH / 2
+
+    for row = 1, 6 do
+        for col = 1, 7 do
+            if pattern[row][col] == 1 then
+                love.graphics.rectangle("fill",
+                    startX + (col - 1) * ps,
+                    startY + (row - 1) * ps,
+                    ps, ps)
+            end
+        end
+    end
+end
+
 -- Number types for color selection
 FloatingNumbers.TYPE_DAMAGE = "damage"
 FloatingNumbers.TYPE_GOLD = "gold"
 FloatingNumbers.TYPE_SHARD = "shard"
 FloatingNumbers.TYPE_CRYSTAL = "crystal"
+FloatingNumbers.TYPE_LIFE = "life"
 
 -- Create a new floating number
 local function createNumber(x, y, value, numberType)
@@ -101,6 +139,13 @@ function FloatingNumbers.init()
         if data.amount and data.amount > 0 then
             local offsetY = -20
             createNumber(data.position.x, data.position.y + offsetY, data.amount, FloatingNumbers.TYPE_CRYSTAL)
+        end
+    end)
+
+    -- Listen for life loss events (creep reached base)
+    EventBus.on("creep_reached_base", function(data)
+        if data.creep then
+            createNumber(data.creep.x, data.creep.y - 20, "-1", FloatingNumbers.TYPE_LIFE)
         end
     end)
 end
@@ -237,7 +282,7 @@ function FloatingNumbers.draw()
 
         -- Format text
         local text = tostring(num.value)
-        if num.numberType ~= FloatingNumbers.TYPE_DAMAGE then
+        if num.numberType ~= FloatingNumbers.TYPE_DAMAGE and num.numberType ~= FloatingNumbers.TYPE_LIFE then
             text = "+" .. text
         end
 
@@ -255,6 +300,8 @@ function FloatingNumbers.draw()
             color = cfg.shardColor
         elseif num.numberType == FloatingNumbers.TYPE_CRYSTAL then
             color = cfg.crystalColor
+        elseif num.numberType == FloatingNumbers.TYPE_LIFE then
+            color = cfg.lifeColor
         else
             color = cfg.damageColor
         end
@@ -265,21 +312,50 @@ function FloatingNumbers.draw()
         love.graphics.rotate(anim.rotation)
         love.graphics.scale(anim.scale, anim.scale)
 
-        -- Draw shadow/outline for readability
-        local shadowAlpha = anim.alpha * 0.6
-        love.graphics.setColor(0, 0, 0, shadowAlpha)
-        local shadowOffset = 1
-        for ox = -shadowOffset, shadowOffset do
-            for oy = -shadowOffset, shadowOffset do
-                if ox ~= 0 or oy ~= 0 then
-                    love.graphics.print(text, -textWidth / 2 + ox, -textHeight / 2 + oy)
+        -- Special handling for life loss: draw text + pixel heart
+        if num.numberType == FloatingNumbers.TYPE_LIFE then
+            local heartSpacing = 4
+            local heartWidth = 14  -- 7 pixels * 2 base size (scale already applied by transform)
+            local totalWidth = textWidth + heartSpacing + heartWidth
+
+            -- Draw shadow for text
+            local shadowAlpha = anim.alpha * 0.6
+            love.graphics.setColor(0, 0, 0, shadowAlpha)
+            local shadowOffset = 1
+            for ox = -shadowOffset, shadowOffset do
+                for oy = -shadowOffset, shadowOffset do
+                    if ox ~= 0 or oy ~= 0 then
+                        love.graphics.print(text, -totalWidth / 2 + ox, -textHeight / 2 + oy)
+                    end
                 end
             end
-        end
 
-        -- Draw main text
-        love.graphics.setColor(color[1], color[2], color[3], anim.alpha)
-        love.graphics.print(text, -textWidth / 2, -textHeight / 2)
+            -- Draw main text
+            love.graphics.setColor(color[1], color[2], color[3], anim.alpha)
+            love.graphics.print(text, -totalWidth / 2, -textHeight / 2)
+
+            -- Draw pixel heart (shadow first, then main) - scale=1 since transform already scales
+            local heartX = -totalWidth / 2 + textWidth + heartSpacing + heartWidth / 2
+            local heartY = 0
+            drawPixelHeart(heartX + 1, heartY + 1, 1, {0, 0, 0}, shadowAlpha)
+            drawPixelHeart(heartX, heartY, 1, color, anim.alpha)
+        else
+            -- Draw shadow/outline for readability
+            local shadowAlpha = anim.alpha * 0.6
+            love.graphics.setColor(0, 0, 0, shadowAlpha)
+            local shadowOffset = 1
+            for ox = -shadowOffset, shadowOffset do
+                for oy = -shadowOffset, shadowOffset do
+                    if ox ~= 0 or oy ~= 0 then
+                        love.graphics.print(text, -textWidth / 2 + ox, -textHeight / 2 + oy)
+                    end
+                end
+            end
+
+            -- Draw main text
+            love.graphics.setColor(color[1], color[2], color[3], anim.alpha)
+            love.graphics.print(text, -textWidth / 2, -textHeight / 2)
+        end
 
         love.graphics.pop()
 

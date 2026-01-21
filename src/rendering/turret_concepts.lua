@@ -9,12 +9,21 @@ local PixelDraw = require("src.rendering.pixel_draw")
 local TurretConcepts = {}
 
 -- =============================================================================
+-- SCALING (derived from cell size - tuned at 64px)
+-- =============================================================================
+
+local TURRET_SCALE = Config.CELL_SIZE / 64  -- Scale factor for all turret dimensions
+local BASE_RADIUS = 20 * TURRET_SCALE       -- Stone base radius
+local VOID_RADIUS = 14 * TURRET_SCALE       -- Void entity radius
+local PIXEL_SIZE = math.max(2, math.floor(3 * TURRET_SCALE))  -- Pixel art granularity (min 2)
+
+-- =============================================================================
 -- CANVAS CACHING FOR PERFORMANCE
 -- =============================================================================
 
 -- Cache for pre-rendered stone bases (keyed by "seed_level")
 local baseCanvasCache = {}
-local BASE_CANVAS_SIZE = 64  -- Size of cached base canvas
+local BASE_CANVAS_SIZE = Config.CELL_SIZE  -- Size of cached base canvas
 
 -- Get or create cached base canvas
 local function getCachedBase(seed, level)
@@ -138,7 +147,7 @@ end
 
 local function drawStoneBase(x, y, ps, time, seed, level)
     level = level or 1
-    local baseRadius = 20
+    local baseRadius = BASE_RADIUS
     local topVisible = 0.9
     -- Base height grows with level (adds floors upward)
     local heightRatio = 0.20 + (level - 1) * 0.08
@@ -232,7 +241,7 @@ end
 local function drawStoneBaseScaled(x, y, ps, time, seed, scale)
     scale = scale or 1
 
-    local baseRadius = 20 * scale
+    local baseRadius = BASE_RADIUS * scale
     local topVisible = 0.9
     local heightRatio = 0.20
 
@@ -899,8 +908,8 @@ local function spawnVoidGravityParticles(particles, x, voidY, voidRadius, colors
 end
 
 local function drawVoidTurret(x, y, variant, variantIndex, rotation, recoilOffset, time, seed, buildProgress, buildParticles, level)
-    local ps = 3
-    local baseVoidRadius = 14
+    local ps = PIXEL_SIZE
+    local baseVoidRadius = VOID_RADIUS
     level = level or 1
 
     -- Apply per-variant size multiplier and level scaling
@@ -926,7 +935,7 @@ local function drawVoidTurret(x, y, variant, variantIndex, rotation, recoilOffse
     -- PHASE 1: Base emerges from ground (scales outward, top-down view)
     -- ===========================================
 
-    local baseRadius = 20
+    local baseRadius = BASE_RADIUS
     -- Calculate height based on level (same formula as drawStoneBase)
     local heightRatio = 0.20 + (level - 1) * 0.08
     local baseHeight = baseRadius * 2 * heightRatio
@@ -1081,7 +1090,7 @@ end
 
 local function drawMuzzleFlash(x, y, rotation, time, seed, ps, colors)
     colors = colors or DEFAULT_COLORS
-    local baseRadius = 20
+    local baseRadius = BASE_RADIUS
     local baseHeight = baseRadius * 2 * 0.2
     local voidRadius = 14
     local levitateHeight = voidRadius * 1.2
@@ -1326,8 +1335,8 @@ function TurretConcepts.drawVoidEntityOnly(variantIndex, x, y, rotation, time, s
     local variant = VARIANTS[variantIndex]
     if not variant then return false end
 
-    local ps = 3
-    local baseVoidRadius = 14
+    local ps = PIXEL_SIZE
+    local baseVoidRadius = VOID_RADIUS
     level = level or 1
 
     -- Apply per-variant size multiplier and level scaling
@@ -1336,7 +1345,7 @@ function TurretConcepts.drawVoidEntityOnly(variantIndex, x, y, rotation, time, s
     local voidRadius = baseVoidRadius * variantSize * levelScale
 
     -- Calculate void Y position (same as in drawVoidTurret)
-    local baseRadius = 20
+    local baseRadius = BASE_RADIUS
     local heightRatio = 0.20 + (level - 1) * 0.08
     local baseHeight = baseRadius * 2 * heightRatio
     local level1Height = baseRadius * 2 * 0.20

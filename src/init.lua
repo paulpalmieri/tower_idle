@@ -5,6 +5,7 @@ local Config = require("src.config")
 local ConfigValidator = require("src.core.config_validator")
 local EventBus = require("src.core.event_bus")
 local StateMachine = require("src.core.state_machine")
+local Camera = require("src.core.camera")
 
 -- Systems
 local Grid = require("src.world.grid")
@@ -22,6 +23,8 @@ local Atmosphere = require("src.rendering.atmosphere")
 local PostProcessing = require("src.rendering.post_processing")
 local Bloom = require("src.rendering.bloom")
 local FloatingNumbers = require("src.rendering.floating_numbers")
+local TurretConcepts = require("src.rendering.turret_concepts")
+local SkillTreeBackground = require("src.rendering.skill_tree_background")
 
 -- Entities
 local Tower = require("src.entities.tower")
@@ -76,6 +79,7 @@ local state = {
     towersSortDirty = true,  -- Flag to rebuild cache when towers change
     -- Debug display
     showDebug = false,  -- Toggle with D key
+    debugPath = nil,    -- Cached path for debug visualization
 }
 
 function Game.load()
@@ -92,28 +96,42 @@ function Game.load()
     -- Initialize fonts (must be before UI)
     Fonts.init()
 
-    -- Initialize game systems
-    Grid.init(Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT)
+    -- Initialize settings early (calculates dynamic screen dimensions)
+    Settings.init()
+
+    -- Get fixed game dimensions (1280x720 canvas)
+    local gameWidth, gameHeight = Settings.getGameDimensions()
+
+    -- Initialize game systems with fixed dimensions
+    Grid.init(gameWidth, gameHeight)
     Economy.init()
     Waves.init()
     Combat.init()
 
-    -- Generate procedural background (full play area height)
-    Background.generate(Grid.getPlayAreaWidth(), Config.SCREEN_HEIGHT)
+    -- Initialize camera with world dimensions and full canvas viewport
+    local worldW, worldH = Grid.getWorldDimensions()
+    Camera.init(worldW, worldH, gameWidth, gameHeight)
+
+    -- Generate procedural background (uses world dimensions internally)
+    Background.generate(gameWidth, gameHeight)
 
     -- Compute initial pathfinding
     state.flowField = Pathfinding.computeFlowField(Grid)
+    -- Debug path is computed lazily when debug mode is enabled
 
     -- Create Void entity (positioned at center of spawn area)
     local voidX, voidY = Grid.getPortalCenter()
     state.void = Void(voidX, voidY)
 
+    -- Center camera on the void portal at game start
+    Camera.centerOn(voidX, voidY)
+
     -- Create Exit Portal entity (positioned at center of base zone)
     local exitX, exitY = Grid.getExitPortalCenter()
     state.exitPortal = ExitPortal(exitX, exitY)
 
-    -- Initialize UI (panel now contains all UI elements)
-    Panel.init(Grid.getPlayAreaWidth(), Grid.getPanelWidth(), Config.SCREEN_HEIGHT)
+    -- Initialize UI (panel is now an overlay on the right side of the canvas)
+    Panel.init(gameWidth, Settings.getPanelWidth(), gameHeight)
 
     -- Initialize custom cursor
     Cursor.init()
@@ -126,9 +144,6 @@ function Game.load()
 
     -- Initialize audio system
     Audio.init()
-
-    -- Initialize settings menu
-    Settings.init()
 
     -- Initialize shortcuts overlay
     Shortcuts.init()
@@ -154,6 +169,14 @@ function Game.load()
 
     -- Start game
     StateMachine.transition("playing")
+end
+
+-- Recompute debug path when flow field changes (only if debug mode is enabled)
+local function _recomputeDebugPath()
+    if state.showDebug then
+        local centerCol = math.ceil(Grid.getCols() / 2)
+        state.debugPath = Pathfinding.findPathToBase(Grid, centerCol, 1)
+    end
 end
 
 -- Spawn test towers for debugging: one row per tower type, levels 1-5
@@ -191,12 +214,14 @@ function Game.spawnTestTowers()
 
     -- Recompute pathfinding after placing all towers
     state.flowField = Pathfinding.computeFlowField(Grid)
+    _recomputeDebugPath()
 end
 
 function Game.setupEvents()
     EventBus.on("tower_placed", function(data)
         -- Recompute pathfinding when towers change
         state.flowField = Pathfinding.computeFlowField(Grid)
+        _recomputeDebugPath()
         -- Track stats for recap screen
         Economy.recordTowerBuilt()
     end)
@@ -267,10 +292,29 @@ function Game.setupEvents()
     end)
 
     EventBus.on("window_resized", function(data)
-        -- Recreate canvases for background and post-processing at the base resolution
-        -- (they are drawn at base res, then scaled by the transform)
-        Background.regenerate(Grid.getPlayAreaWidth(), Config.SCREEN_HEIGHT)
+        -- Reinitialize Grid with fixed canvas dimensions
+        Grid.init(data.gameWidth, data.gameHeight)
+
+        -- Preserve camera position during resize
+        local camX, camY = Camera.getPosition()
+        local worldW, worldH = Grid.getWorldDimensions()
+        Camera.init(worldW, worldH, data.gameWidth, data.gameHeight)
+        Camera.centerOn(camX, camY)  -- Restore position (will be clamped to valid bounds)
+
+        -- Reinitialize UI panel (overlay on right side of canvas)
+        Panel.init(data.gameWidth, data.panelWidth, data.gameHeight)
+
+        -- Recreate canvases for background and post-processing
+        Background.regenerate(data.gameWidth, data.gameHeight)
         PostProcessing.resize()
+
+        -- Clear turret base canvas cache (canvas contents can be invalidated on window mode change)
+        TurretConcepts.clearCache()
+
+        -- Regenerate skill tree background if visible
+        if SkillTree.isVisible() then
+            SkillTreeBackground.generate()
+        end
     end)
 
     -- New tower attack spawn events
@@ -345,8 +389,10 @@ function Game.spawnImmediateEnemy()
     -- All enemies are now Void Spawns
     local creepType = "voidSpawn"
 
-    -- Spawn from the portal
-    local x, y = Grid.getSpawnPosition(nil, state.void)
+    -- Spawn from random column on spawn row (same as wave spawns)
+    local cols = Grid.getCols()
+    local spawnCol = math.random(1, cols)
+    local x, y = Grid.getSpawnPosition(spawnCol)
     local creep = Creep(x, y, creepType)
     table.insert(state.creeps, creep)
 
@@ -464,9 +510,13 @@ local function _findTowerAt(screenX, screenY)
 end
 
 function Game.update(dt)
-    -- Get mouse position in screen and game coordinates
+    -- Get mouse position in screen coordinates and game coordinates (scaled for window)
     local screenMx, screenMy = love.mouse.getPosition()
-    local mx, my = Settings.screenToGame(screenMx, screenMy)
+    local gameMx, gameMy = Settings.screenToGame(screenMx, screenMy)
+
+    -- Convert game coordinates to world coordinates through camera
+    -- mx, my are world coordinates (where entities live)
+    local mx, my = Camera.screenToWorld(gameMx, gameMy)
 
     -- Update settings menu (uses screen coordinates)
     Settings.update(screenMx, screenMy)
@@ -475,19 +525,23 @@ function Game.update(dt)
     if Settings.isVisible() or Shortcuts.isVisible() or SkillTree.isVisible() or VictoryScreen.isVisible() or PauseMenu.isVisible() then
         -- Update skill tree hover state
         if SkillTree.isVisible() then
-            SkillTree.update(mx, my)
+            SkillTree.update(gameMx, gameMy)
         end
         -- Update victory screen hover state
         if VictoryScreen.isVisible() then
-            VictoryScreen.update(mx, my)
+            VictoryScreen.update(gameMx, gameMy)
         end
         -- Update pause menu hover state
         if PauseMenu.isVisible() then
-            PauseMenu.update(mx, my)
+            PauseMenu.update(gameMx, gameMy)
         end
         Cursor.setCursor(Cursor.POINTER)
         return
     end
+
+    -- Update camera (zoom interpolation)
+    local realDtForCamera = math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME)
+    Camera.update(realDtForCamera)
 
     -- Cap delta time
     dt = math.min(dt, Config.MAX_DELTA_TIME)
@@ -686,10 +740,11 @@ function Game.update(dt)
     -- Update floating numbers (uses real dt for smooth animations)
     FloatingNumbers.update(math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME))
 
-    -- Update UI
-    Panel.update(mx, my)
+    -- Update UI (Panel uses game/screen coordinates, not world)
+    Panel.update(gameMx, gameMy)
 
     -- Track hovered tower (only when not placing a tower)
+    -- Tower positions are in world coordinates, so use mx, my
     local towerSelectedForPlacement = Panel.getSelectedTower() ~= nil
 
     -- Clear previous hover state
@@ -697,7 +752,9 @@ function Game.update(dt)
         state.hoveredTower.isHovered = false
     end
 
-    if not towerSelectedForPlacement and mx < Grid.getPlayAreaWidth() then
+    -- Check if mouse is in play area (not over panel overlay)
+    local panelX = Settings.getPanelX()
+    if not towerSelectedForPlacement and gameMx < panelX then
         state.hoveredTower = _findTowerAt(mx, my)
     else
         state.hoveredTower = nil
@@ -714,20 +771,35 @@ function Game.update(dt)
     -- Check if hovering over a panel button
     if Panel.isHoveringButton() then
         isClickable = true
-    -- Check if hovering over tooltip button
-    elseif Tooltip.isHoveringButton(mx, my) then
+    -- Check if hovering over tooltip button (uses game coords for tooltip position)
+    elseif Tooltip.isHoveringButton(gameMx, gameMy) then
         isClickable = true
-    -- Check if hovering over void
+    -- Check if hovering over void (world coords)
     elseif state.void and state.void:isPointInside(mx, my) then
         isClickable = true
+        state.void:setHovered(true)
     -- Check if hovering over a placed tower
     elseif state.hoveredTower then
         isClickable = true
     end
 
-    if isClickable then
+    -- Clear void hover state when not hovering
+    if state.void and not state.void:isPointInside(mx, my) then
+        state.void:setHovered(false)
+    end
+
+    -- Update cursor based on state
+    if Camera.isDragging() then
+        -- Actively dragging the camera
+        Cursor.setCursor(Cursor.GRABBING)
+    elseif isClickable then
+        -- Hovering over clickable element
         Cursor.setCursor(Cursor.POINTER)
+    elseif gameMx < panelX and not towerSelectedForPlacement then
+        -- In play area with no tower selected - ready to drag
+        Cursor.setCursor(Cursor.GRAB)
     else
+        -- Default cursor
         Cursor.setCursor(Cursor.ARROW)
     end
 
@@ -741,9 +813,9 @@ function Game.draw()
     local offsetX, offsetY = Settings.getOffset()
     local windowW, windowH = Settings.getWindowDimensions()
 
-    -- Fill letterbox areas with background color (if aspect ratio differs)
+    -- Fill letterbox/pillarbox areas with BLACK (for non-16:9 screens)
     if offsetX > 0 or offsetY > 0 then
-        love.graphics.setColor(0, 0, 0)
+        love.graphics.setColor(0, 0, 0, 1)
         love.graphics.rectangle("fill", 0, 0, windowW, windowH)
     end
 
@@ -751,26 +823,29 @@ function Game.draw()
     -- This must happen BEFORE applying transform so scene renders at 1:1
     PostProcessing.beginFrame()
 
-    -- No transform needed when drawing to scene canvas - it's at base resolution
-    -- The transform will be applied when we draw the canvas to screen
+    -- Apply camera transform for world rendering
+    -- Everything drawn from here until we pop is in world coordinates
+    Camera.push()
 
-    -- Draw procedural background first
+    -- Draw procedural background first (in world space)
     Profiler.start("background_draw")
     Background.draw()
     Profiler.stop("background_draw")
 
-    -- Draw atmospheric fog/dust particles (behind game elements)
+    -- Draw atmospheric fog/dust particles (behind game elements, in world space)
     Profiler.start("atmosphere_draw")
     Atmosphere.drawParticles()
     Profiler.stop("atmosphere_draw")
 
-    -- Get mouse position in game coordinates
+    -- Get mouse position in game and world coordinates
     local screenMx, screenMy = love.mouse.getPosition()
-    local mx, my = Settings.screenToGame(screenMx, screenMy)
+    local gameMx, gameMy = Settings.screenToGame(screenMx, screenMy)
+    local mx, my = Camera.screenToWorld(gameMx, gameMy)
 
     -- Determine if we should show grid overlay (only when a tower is selected for placement)
     local towerSelectedForPlacement = Panel.getSelectedTower() ~= nil
-    local showGridOverlay = towerSelectedForPlacement and mx < Grid.getPlayAreaWidth()
+    local panelXDraw = Settings.getPanelX()
+    local showGridOverlay = towerSelectedForPlacement and gameMx < panelXDraw
 
     -- Draw game world (grid overlay only when placing towers)
     Grid.draw(showGridOverlay)
@@ -900,11 +975,21 @@ function Game.draw()
     FloatingNumbers.draw()
 
     -- Draw tower placement preview (only if tower selected for placement and no placed tower selected)
-    if towerSelectedForPlacement and mx < Grid.getPlayAreaWidth() and not state.selectedTower then
+    -- Check gameMx for play area bounds (before panel overlay), but use mx (world coords) for actual positioning
+    if towerSelectedForPlacement and gameMx < panelXDraw and not state.selectedTower then
         local canAfford = Economy.canAfford(Panel.getSelectedTowerCost())
         local towerType = Panel.getSelectedTower()
         Grid.drawHover(mx, my, canAfford, towerType)
     end
+
+    -- Draw pathfinding debug overlay (in world space)
+    if state.showDebug then
+        Grid.drawDebug(state.flowField)
+        Grid.drawGhostPath(state.debugPath)
+    end
+
+    -- Pop camera transform before ending scene rendering
+    Camera.pop()
 
     -- End scene rendering (stop drawing to scene canvas)
     PostProcessing.endFrame()
@@ -1078,6 +1163,7 @@ local function _sellTower(tower)
 
     -- Recompute pathfinding
     state.flowField = Pathfinding.computeFlowField(Grid)
+    _recomputeDebugPath()
 
     -- Emit event
     EventBus.emit("tower_sold", { tower = tower, refund = refund })
@@ -1112,13 +1198,14 @@ function Game.mousepressed(screenX, screenY, button)
         return
     end
 
-    -- Convert to game coordinates for all other interactions
-    local x, y = Settings.screenToGame(screenX, screenY)
+    -- Convert to game coordinates (scaled for window) and world coordinates (with camera offset)
+    local gameX, gameY = Settings.screenToGame(screenX, screenY)
+    local worldX, worldY = Camera.screenToWorld(gameX, gameY)
 
     -- Priority 0.25: Pause menu (if visible) - uses game coordinates
     if PauseMenu.isVisible() then
         if button == 1 then
-            local result = PauseMenu.handleClick(x, y)
+            local result = PauseMenu.handleClick(gameX, gameY)
             if result then
                 if result.action == "resume" then
                     PauseMenu.hide()
@@ -1134,7 +1221,7 @@ function Game.mousepressed(screenX, screenY, button)
     -- Priority 0.5: Victory screen (if visible) - uses game coordinates
     if VictoryScreen.isVisible() then
         if button == 1 then
-            local result = VictoryScreen.handleClick(x, y)
+            local result = VictoryScreen.handleClick(gameX, gameY)
             if result then
                 if result.action == "restart" then
                     Game.restart()
@@ -1149,7 +1236,7 @@ function Game.mousepressed(screenX, screenY, button)
 
     -- Priority 0.6: Skill tree scene (if active) - uses game coordinates
     if SkillTree.isActive() then
-        local result = SkillTree.handleClick(x, y, button)
+        local result = SkillTree.handleClick(gameX, gameY, button)
         if type(result) == "table" and result.action then
             if result.action == "start_run" then
                 SkillTree.deactivate()
@@ -1165,9 +1252,9 @@ function Game.mousepressed(screenX, screenY, button)
     -- Only left click for the rest
     if button ~= 1 then return end
 
-    -- Priority 1: Tooltip clicks (if visible)
-    if Tooltip.isPointInside(x, y) then
-        local result = Tooltip.handleClick(x, y, Economy)
+    -- Priority 1: Tooltip clicks (if visible) - tooltip is in game/screen space
+    if Tooltip.isPointInside(gameX, gameY) then
+        local result = Tooltip.handleClick(gameX, gameY, Economy)
         if result then
             local tower = state.selectedTower
             if result.action == "upgrade" then
@@ -1191,10 +1278,11 @@ function Game.mousepressed(screenX, screenY, button)
         return
     end
 
-    -- Priority 2: Panel clicks (deselect any selected tower)
-    if x >= Grid.getPlayAreaWidth() then
+    -- Priority 2: Panel clicks (deselect any selected tower) - panel uses game coords
+    local panelXClick = Settings.getPanelX()
+    if gameX >= panelXClick then
         _selectTower(nil)
-        local result = Panel.handleClick(x, y, Economy)
+        local result = Panel.handleClick(gameX, gameY, Economy)
         if result and result.action == "buy_upgrade" then
             if Economy.spendGold(result.cost) then
                 Panel.purchaseUpgrade(result.type)
@@ -1208,15 +1296,15 @@ function Game.mousepressed(screenX, screenY, button)
         return
     end
 
-    -- Priority 3: Void clicks (before tower selection)
-    if state.void and state.void:isPointInside(x, y) then
+    -- Priority 3: Void clicks (before tower selection) - void is in world space
+    if state.void and state.void:isPointInside(worldX, worldY) then
         _selectTower(nil)
         Game.clickVoid()
         return
     end
 
-    -- Priority 4: Click on placed tower (select/deselect)
-    local clickedTower = _findTowerAt(x, y)
+    -- Priority 4: Click on placed tower (select/deselect) - towers are in world space
+    local clickedTower = _findTowerAt(worldX, worldY)
     if clickedTower then
         -- Toggle selection
         if state.selectedTower == clickedTower then
@@ -1234,30 +1322,45 @@ function Game.mousepressed(screenX, screenY, button)
     end
 
     -- Priority 5: Place tower (only if one is selected) and start drag
+    -- Grid uses world coordinates
     local towerType = Panel.getSelectedTower()
     if towerType then
-        local gridX, gridY = Grid.screenToGrid(x, y)
+        local gridX, gridY = Grid.screenToGrid(worldX, worldY)
         if _tryPlaceTower(gridX, gridY) then
             state.isDragging = true
             state.lastPlacedCell = { gridX = gridX, gridY = gridY }
+        end
+    else
+        -- No tower selected for placement - start camera drag on empty play area (not over panel)
+        if gameX < panelXClick then
+            Camera.startDrag(gameX, gameY)
         end
     end
 end
 
 function Game.mousemoved(screenX, screenY, dx, dy)
-    -- Convert to game coordinates
-    local x, y = Settings.screenToGame(screenX, screenY)
+    -- Convert to game coordinates and world coordinates
+    local gameX, gameY = Settings.screenToGame(screenX, screenY)
+    local worldX, worldY = Camera.screenToWorld(gameX, gameY)
+
+    -- Update camera drag-to-pan
+    if Camera.isDragging() then
+        Camera.updateDrag(gameX, gameY)
+        return
+    end
 
     -- Drag-to-place: continue placing towers while dragging
     if state.isDragging and love.mouse.isDown(1) then
-        -- Stop drag if moved to panel area
-        if x >= Grid.getPlayAreaWidth() then
+        -- Stop drag if moved to panel area (use game coords for UI check)
+        local panelXDrag = Settings.getPanelX()
+        if gameX >= panelXDrag then
             state.isDragging = false
             state.lastPlacedCell = nil
             return
         end
 
-        local gridX, gridY = Grid.screenToGrid(x, y)
+        -- Grid uses world coordinates
+        local gridX, gridY = Grid.screenToGrid(worldX, worldY)
 
         -- Skip if same cell as last placed
         if state.lastPlacedCell and
@@ -1291,6 +1394,9 @@ function Game.mousereleased(screenX, screenY, button)
             Settings.handleRelease(screenX, screenY)
         end
 
+        -- End camera drag-to-pan
+        Camera.endDrag()
+
         state.isDragging = false
         state.lastPlacedCell = nil
     end
@@ -1301,6 +1407,21 @@ function Game.wheelmoved(x, y)
     if SkillTree.isActive() then
         SkillTree.handleWheel(x, y)
         return
+    end
+
+    -- Skip if any modal is open
+    if Settings.isVisible() or Shortcuts.isVisible() or VictoryScreen.isVisible() or PauseMenu.isVisible() then
+        return
+    end
+
+    -- Handle battlefield zoom (only when mouse is in play area, not over panel)
+    local screenMx, screenMy = love.mouse.getPosition()
+    local gameMx, gameMy = Settings.screenToGame(screenMx, screenMy)
+    local panelXWheel = Settings.getPanelX()
+
+    if gameMx < panelXWheel then
+        local zoomDelta = y * Config.CAMERA.zoomSpeed
+        Camera.adjustZoom(zoomDelta)
     end
 end
 
@@ -1403,6 +1524,12 @@ function Game.keypressed(key)
         return
     end
 
+    -- Borderless toggle
+    if key == "b" then
+        Settings.toggleBorderless()
+        return
+    end
+
     -- Floating numbers style cycle
     if key == "g" then
         local newStyle = FloatingNumbers.cycleStyle()
@@ -1413,6 +1540,22 @@ function Game.keypressed(key)
     -- Debug overlay toggle
     if key == "d" then
         state.showDebug = not state.showDebug
+        -- Compute debug path when enabling debug mode
+        if state.showDebug then
+            _recomputeDebugPath()
+        end
+        return
+    end
+
+    -- Zoom controls
+    if key == "=" or key == "kp+" then
+        Camera.adjustZoom(Config.CAMERA.zoomSpeed)
+        return
+    elseif key == "-" or key == "kp-" then
+        Camera.adjustZoom(-Config.CAMERA.zoomSpeed)
+        return
+    elseif key == "0" or key == "kp0" then
+        Camera.resetZoom()
         return
     end
 
@@ -1458,8 +1601,15 @@ function Game.restart()
     state.gameSpeedIndex = 1
     state.autoClickTimer = 0
 
-    -- Reset grid
-    Grid.init(Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT)
+    -- Get fixed game dimensions (1280x720 canvas)
+    local gameWidth, gameHeight = Settings.getGameDimensions()
+
+    -- Reset grid with fixed dimensions
+    Grid.init(gameWidth, gameHeight)
+
+    -- Reset camera with full canvas viewport
+    local worldW, worldH = Grid.getWorldDimensions()
+    Camera.init(worldW, worldH, gameWidth, gameHeight)
 
     -- Reset systems
     Economy.init()
@@ -1467,17 +1617,21 @@ function Game.restart()
 
     -- Recompute pathfinding
     state.flowField = Pathfinding.computeFlowField(Grid)
+    _recomputeDebugPath()
 
     -- Reset Void entity
     local voidX, voidY = Grid.getPortalCenter()
     state.void = Void(voidX, voidY)
 
+    -- Center camera on void portal
+    Camera.centerOn(voidX, voidY)
+
     -- Reset Exit Portal
     local exitX, exitY = Grid.getExitPortalCenter()
     state.exitPortal = ExitPortal(exitX, exitY)
 
-    -- Reset UI
-    Panel.init(Grid.getPlayAreaWidth(), Grid.getPanelWidth(), Config.SCREEN_HEIGHT)
+    -- Reset UI (panel is overlay on right side of canvas)
+    Panel.init(gameWidth, Settings.getPanelWidth(), gameHeight)
     Tooltip.hide()
 end
 

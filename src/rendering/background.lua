@@ -80,14 +80,19 @@ end
 
 function Background.generate(width, height)
     state.seed = math.random(10000)
-    state.width = width
-    state.height = height
+
+    -- Use world dimensions if available (for scrollable camera)
+    local worldWidth = Config.WORLD_WIDTH or width
+    local worldHeight = Config.WORLD_HEIGHT or height
+
+    state.width = worldWidth
+    state.height = worldHeight
 
     local ps = Config.BACKGROUND.pixelSize
-    local cols = math.ceil(width / ps)
-    local rows = math.ceil(height / ps)
+    local cols = math.ceil(worldWidth / ps)
+    local rows = math.ceil(worldHeight / ps)
 
-    state.canvas = love.graphics.newCanvas(width, height)
+    state.canvas = love.graphics.newCanvas(worldWidth, worldHeight)
     state.canvas:setFilter("nearest", "nearest")
 
     love.graphics.setCanvas(state.canvas)
@@ -107,6 +112,52 @@ function Background.draw()
         love.graphics.setColor(1, 1, 1)
         love.graphics.draw(state.canvas, 0, 0)
     end
+end
+
+-- Draw background to fill letterbox areas (called before scaling transform)
+-- Draws a portion of the background texture scaled to fill the window
+function Background.drawLetterbox(windowW, windowH, offsetX, offsetY, scale)
+    if not state.canvas then return end
+    if offsetX <= 0 and offsetY <= 0 then return end
+
+    love.graphics.setColor(1, 1, 1)
+
+    -- Draw left letterbox
+    if offsetX > 0 then
+        -- Sample from left edge of background, tile vertically
+        local quad = love.graphics.newQuad(0, 0, 32, state.height, state.width, state.height)
+        love.graphics.draw(state.canvas, quad, 0, offsetY, 0, offsetX / 32, scale)
+        -- Right letterbox
+        local rightX = offsetX + Config.SCREEN_WIDTH * scale
+        love.graphics.draw(state.canvas, quad, rightX, offsetY, 0, (windowW - rightX) / 32, scale)
+    end
+
+    -- Draw top letterbox
+    if offsetY > 0 then
+        local quad = love.graphics.newQuad(0, 0, state.width, 32, state.width, state.height)
+        love.graphics.draw(state.canvas, quad, offsetX, 0, 0, scale, offsetY / 32)
+        -- Bottom letterbox
+        local bottomY = offsetY + Config.SCREEN_HEIGHT * scale
+        love.graphics.draw(state.canvas, quad, offsetX, bottomY, 0, scale, (windowH - bottomY) / 32)
+    end
+
+    -- Fill corners if both offsets exist
+    if offsetX > 0 and offsetY > 0 then
+        local bgColor = Config.BACKGROUND.colors.base
+        love.graphics.setColor(bgColor[1], bgColor[2], bgColor[3])
+        -- Top-left
+        love.graphics.rectangle("fill", 0, 0, offsetX, offsetY)
+        -- Top-right
+        love.graphics.rectangle("fill", offsetX + Config.SCREEN_WIDTH * scale, 0, offsetX, offsetY)
+        -- Bottom-left
+        love.graphics.rectangle("fill", 0, offsetY + Config.SCREEN_HEIGHT * scale, offsetX, offsetY)
+        -- Bottom-right
+        love.graphics.rectangle("fill", offsetX + Config.SCREEN_WIDTH * scale, offsetY + Config.SCREEN_HEIGHT * scale, offsetX, offsetY)
+    end
+end
+
+function Background.getBaseColor()
+    return Config.BACKGROUND.colors.base
 end
 
 function Background.regenerate(width, height)

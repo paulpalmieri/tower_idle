@@ -80,14 +80,22 @@ local function _heuristic(x1, y1, x2, y2)
 end
 
 -- Check if a cell is walkable (for creeps)
--- Walkable: empty (0), spawn zone (2), base zone (3)
+-- Walkable: empty (0), spawn zone (2), base zone (3), row 0 (virtual spawn buffer)
 -- Not walkable: tower (1)
 local function _isWalkable(grid, x, y)
     local cols = grid.getCols()
     local rows = grid.getRows()
+
+    -- Allow row 0 as virtual spawn row (always walkable)
+    if y == 0 and x >= 1 and x <= cols then
+        return true
+    end
+
+    -- Standard bounds check
     if x < 1 or x > cols or y < 1 or y > rows then
         return false
     end
+
     local cells = grid.getCells()
     local cell = cells[y][x]
     return cell ~= 1  -- Everything except towers is walkable
@@ -117,6 +125,11 @@ end
 -- Returns a list of {x, y} grid coordinates from start to goal, or nil if no path
 -- grid: the Grid module (with getCells, getCols, getRows functions)
 function Pathfinding.findPath(grid, startX, startY, goalX, goalY)
+    -- Quick check: if start is not walkable, no path
+    if not _isWalkable(grid, startX, startY) then
+        return nil
+    end
+
     -- Quick check: if goal is not walkable, no path
     if not _isWalkable(grid, goalX, goalY) then
         return nil
@@ -178,6 +191,7 @@ end
 -- Find path from spawn point to base
 -- Returns the path or nil if no path exists
 -- Tries to reach ANY cell in the base row (not just center)
+-- spawnY can be 0 (buffer zone) or 1+ (on grid)
 function Pathfinding.findPathToBase(grid, spawnX, spawnY)
     local cols = grid.getCols()
     local baseRow = grid.getBaseRow()
@@ -200,16 +214,16 @@ function Pathfinding.findPathToBase(grid, spawnX, spawnY)
     return nil
 end
 
--- Check if any path exists from grid entry (row 1) to base
+-- Check if any path exists from spawn buffer (row 0) to base
 -- Used to prevent blocking placements
--- Returns true if at least one column in row 1 can reach the base
+-- Returns true if at least one column in row 0 can reach the base
 function Pathfinding.hasValidPath(grid)
     local cols = grid.getCols()
 
-    -- Check from every column in row 1 (where creeps enter from buffer)
-    -- A valid path must exist from at least one entry point
+    -- Check from virtual row 0 (spawn buffer) to base
+    -- A valid path must exist from at least one spawn column
     for x = 1, cols do
-        local path = Pathfinding.findPathToBase(grid, x, 1)
+        local path = Pathfinding.findPathToBase(grid, x, 0)
         if path then
             return true  -- Found at least one valid path
         end
@@ -283,8 +297,9 @@ function Pathfinding.computeFlowField(grid)
         end
     end
 
-    -- Compute flow directions (each cell points toward lower distance)
-    for y = 1, rows do
+    -- Compute flow directions for rows 0 to rows (including virtual row 0)
+    -- Each cell points toward lower distance
+    for y = 0, rows do
         flowField[y] = {}
         for x = 1, cols do
             local key = y .. "," .. x

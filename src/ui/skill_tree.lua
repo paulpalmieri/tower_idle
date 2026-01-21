@@ -11,6 +11,7 @@ local Economy = require("src.systems.economy")
 local TurretConcepts = require("src.rendering.turret_concepts")
 local SkillTreeBackground = require("src.rendering.skill_tree_background")
 local Creep = require("src.entities.creep")
+local Settings = require("src.ui.settings")
 
 local SkillTree = {}
 
@@ -114,6 +115,8 @@ local state = {
     voidSpawn = nil,
     voidSpawnHovered = false,
     voidSpawnScale = 1.0,
+    -- Gravity particles (same as ExitPortal)
+    gravityParticles = {},
 }
 
 -- =============================================================================
@@ -137,8 +140,9 @@ end
 
 -- Convert screen coordinates to world coordinates (accounting for perspective)
 local function _screenToWorld(screenX, screenY)
-    local centerX = Config.SCREEN_WIDTH / 2
-    local centerY = Config.SCREEN_HEIGHT / 2
+    local gameW, gameH = Settings.getGameDimensions()
+    local centerX = gameW / 2
+    local centerY = gameH / 2
     local perspectiveY = _getPerspectiveYRatio()
     local worldX = (screenX - centerX) + camera.x
     -- Reverse perspective: divide by ratio to get true world Y
@@ -148,8 +152,9 @@ end
 
 -- Convert world coordinates to screen coordinates (accounting for perspective)
 local function _worldToScreen(worldX, worldY)
-    local centerX = Config.SCREEN_WIDTH / 2
-    local centerY = Config.SCREEN_HEIGHT / 2
+    local gameW, gameH = Settings.getGameDimensions()
+    local centerX = gameW / 2
+    local centerY = gameH / 2
     local perspectiveY = _getPerspectiveYRatio()
     local screenX = (worldX - camera.x) + centerX
     -- Apply perspective: multiply Y by ratio for squashed look
@@ -159,8 +164,9 @@ end
 
 -- Apply camera transform for drawing (with perspective)
 local function _applyCameraTransform()
-    local centerX = Config.SCREEN_WIDTH / 2
-    local centerY = Config.SCREEN_HEIGHT / 2
+    local gameW, gameH = Settings.getGameDimensions()
+    local centerX = gameW / 2
+    local centerY = gameH / 2
     local perspectiveY = _getPerspectiveYRatio()
     love.graphics.push()
     love.graphics.translate(centerX, centerY)
@@ -374,6 +380,79 @@ local function _getNodeSize(node)
 end
 
 -- =============================================================================
+-- GRAVITY PARTICLE SYSTEM (Same as ExitPortal)
+-- =============================================================================
+
+-- Void spawn size for particle calculations (matches 1.8x scaled void spawn)
+local VOID_SPAWN_SIZE = 25 * 1.8  -- Base creep size * skill tree scale
+
+-- Spawn a single gravity particle
+local function _spawnGravityParticle()
+    local cfg = Config.VOID_CORE
+    local pcfg = cfg.particles
+    local angle = math.random() * math.pi * 2
+    local dist = VOID_SPAWN_SIZE * (pcfg.spawnRadius * (0.8 + math.random() * 0.4))
+
+    return {
+        angle = angle,
+        dist = dist,
+        speed = pcfg.pullSpeed * (0.7 + math.random() * 0.6),
+        brightness = 0.3 + math.random() * 0.5,
+    }
+end
+
+-- Initialize all gravity particles
+local function _initGravityParticles()
+    local cfg = Config.VOID_CORE.particles
+    state.gravityParticles = {}
+    for _ = 1, cfg.count do
+        table.insert(state.gravityParticles, _spawnGravityParticle())
+    end
+end
+
+-- Update gravity particles (pull inward)
+local function _updateGravityParticles(dt)
+    local cfg = Config.VOID_CORE
+
+    for i = #state.gravityParticles, 1, -1 do
+        local p = state.gravityParticles[i]
+        p.dist = p.dist - p.speed * dt
+
+        -- Respawn when reaching core
+        if p.dist < cfg.coreSize then
+            table.remove(state.gravityParticles, i)
+            table.insert(state.gravityParticles, _spawnGravityParticle())
+        end
+    end
+end
+
+-- Draw gravity particles
+local function _drawGravityParticles()
+    local cfg = Config.VOID_CORE
+    local pcfg = cfg.particles
+    local ps = pcfg.size
+
+    for _, p in ipairs(state.gravityParticles) do
+        local x = math.cos(p.angle) * p.dist
+        local y = math.sin(p.angle) * p.dist
+        local distNorm = p.dist / (VOID_SPAWN_SIZE * pcfg.spawnRadius)
+        -- Stronger alpha for more visible trails, brighter when far, still visible when close
+        local alpha = p.brightness * (0.3 + distNorm * 0.7)
+
+        -- Brighter color with slight additive feel
+        love.graphics.setColor(pcfg.color[1], pcfg.color[2], pcfg.color[3], alpha)
+        love.graphics.rectangle("fill", x - ps/2, y - ps/2, ps, ps)
+
+        -- Add a subtle glow/trail behind each particle
+        if distNorm > 0.3 then
+            local glowAlpha = alpha * 0.3
+            love.graphics.setColor(pcfg.color[1], pcfg.color[2], pcfg.color[3], glowAlpha)
+            love.graphics.rectangle("fill", x - ps, y - ps, ps * 2, ps * 2)
+        end
+    end
+end
+
+-- =============================================================================
 -- PUBLIC API
 -- =============================================================================
 
@@ -397,6 +476,9 @@ function SkillTree.activate()
     -- Create void spawn at center for start run button
     state.voidSpawn = Creep(0, 0, "voidSpawn")
     state.voidSpawn.spawnPhase = "active"  -- Skip spawn animation
+
+    -- Initialize gravity particle system (same as ExitPortal)
+    _initGravityParticles()
 
     -- Generate background (regenerate to ensure correct size)
     SkillTreeBackground.generate()
@@ -442,6 +524,9 @@ function SkillTree.update(mouseX, mouseY)
     if state.voidSpawn then
         state.voidSpawn.time = state.voidSpawn.time + dt
     end
+
+    -- Update gravity particles
+    _updateGravityParticles(dt)
 
     -- Handle panning (with left mouse drag)
     if camera.isPanning then
@@ -567,8 +652,9 @@ function SkillTree.draw()
     if not state.active then return end
 
     -- Draw dark background fallback (will be mostly covered by Voronoi texture)
+    local gameW, gameH = Settings.getGameDimensions()
     love.graphics.setColor(0.03, 0.02, 0.05)
-    love.graphics.rectangle("fill", 0, 0, Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT)
+    love.graphics.rectangle("fill", 0, 0, gameW, gameH)
 
     -- Apply camera transform for world elements
     _applyCameraTransform()
@@ -582,19 +668,22 @@ function SkillTree.draw()
     -- 3. Nodes (subtle, transparent, blends with ground)
     SkillTree.drawNodes()
 
-    -- 4. Void spawn at center (clickable start run)
+    -- 4. Gravity particles (same as ExitPortal - pulled toward center)
+    _drawGravityParticles()
+
+    -- 5. Void spawn at center (clickable start run)
     SkillTree.drawVoidSpawn()
 
     _resetCameraTransform()
 
-    -- 5. Towers (screen space, upright - not affected by perspective transform)
+    -- 6. Towers (screen space, upright - not affected by perspective transform)
     -- We manually convert world coords to screen coords
     SkillTree.drawTowers()
 
-    -- 6. UI elements (screen space, not affected by camera)
+    -- 7. UI elements (screen space, not affected by camera)
     SkillTree.drawUI()
 
-    -- 7. Tooltip for hovered node (screen space)
+    -- 8. Tooltip for hovered node (screen space)
     if state.hoveredNode then
         SkillTree.drawTooltip(state.hoveredNode)
     end
@@ -1105,13 +1194,14 @@ function SkillTree.drawCarvedPaths()
 end
 
 function SkillTree.drawUI()
+    local gameW, gameH = Settings.getGameDimensions()
     local shards = Economy.getVoidShards()
     local crystals = Economy.getVoidCrystals()
 
     -- Currency display (top center)
     local currencyWidth = 200
     local currencyHeight = 50
-    local currencyX = Config.SCREEN_WIDTH / 2 - currencyWidth / 2
+    local currencyX = gameW / 2 - currencyWidth / 2
     local currencyY = 20
 
     PixelFrames.draw8BitFrame(currencyX, currencyY, currencyWidth, currencyHeight, "hud")
@@ -1145,7 +1235,7 @@ function SkillTree.drawUI()
     local scheme = _getColorScheme()
     love.graphics.printf(
         "Click center to start | Click node: allocate | Right-click: refund | Drag: pan | N: " .. scheme.name,
-        0, Config.SCREEN_HEIGHT - 28, Config.SCREEN_WIDTH, "center"
+        0, gameH - 28, gameW, "center"
     )
 end
 
@@ -1201,12 +1291,13 @@ function SkillTree.drawTooltip(node)
     local tooltipX = screenX + 20
     local tooltipY = screenY - tooltipHeight / 2
 
-    if tooltipX + tooltipWidth > Config.SCREEN_WIDTH - 10 then
+    local gameW, gameH = Settings.getGameDimensions()
+    if tooltipX + tooltipWidth > gameW - 10 then
         tooltipX = screenX - tooltipWidth - 20
     end
     if tooltipY < 50 then tooltipY = 50 end
-    if tooltipY + tooltipHeight > Config.SCREEN_HEIGHT - 30 then
-        tooltipY = Config.SCREEN_HEIGHT - 30 - tooltipHeight
+    if tooltipY + tooltipHeight > gameH - 30 then
+        tooltipY = gameH - 30 - tooltipHeight
     end
 
     love.graphics.setColor(0.08, 0.06, 0.1, 0.95)

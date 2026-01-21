@@ -80,6 +80,13 @@ function Creep:new(x, y, creepType, healthMultiplier, speedMultiplier)
     self.lastX = x
     self.lastY = y
 
+    -- Path wobble for natural movement variation
+    self.wobbleOffset = {
+        x = (random() - 0.5) * 2,  -- -1 to 1
+        y = (random() - 0.5) * 2,
+    }
+    self.wobbleScale = Config.CREEP_WOBBLE_SCALE or 10  -- Pixels of variation
+
     -- OPTIMIZATION: Cache config reference for this creep type
     if creepType == "voidSpider" then
         self.cfg = Config.VOID_SPIDER
@@ -380,7 +387,7 @@ end
 
 -- Start the exit animation (called when creep reaches base)
 function Creep:startExitAnimation(portalX, portalY)
-    self.exitPhase = "tear_open"
+    self.exitPhase = "sucking"
     self.exitTimer = 0
     self.exitX = self.x
     self.exitY = self.y
@@ -388,38 +395,23 @@ function Creep:startExitAnimation(portalX, portalY)
     self.exitPortalY = portalY
 end
 
--- Update exit animation state machine
+-- Update exit animation - simple suck into void
 function Creep:updateExitAnimation(dt)
-    local cfg = Config.EXIT_ANIMATION
+    local suckDuration = 0.3  -- Quick suck animation
 
     self.exitTimer = self.exitTimer + dt
 
-    if self.exitPhase == "tear_open" then
-        if self.exitTimer >= cfg.tearOpenDuration then
-            self.exitPhase = "devouring"
-            self.exitTimer = 0
-        end
-    elseif self.exitPhase == "devouring" then
+    if self.exitPhase == "sucking" then
         -- Pull creep toward portal center
-        local progress = self.exitTimer / cfg.devouringDuration
-        local pullAmount = _easeOutQuad(progress) * cfg.pullDistance
-        -- Move toward portal center
-        local dx = self.exitPortalX - self.exitX
-        local dy = self.exitPortalY - self.exitY
-        local dist = math.sqrt(dx * dx + dy * dy)
-        if dist > 0 then
-            self.x = self.exitX + (dx / dist) * pullAmount
-            self.y = self.exitY + (dy / dist) * pullAmount
-        end
+        local progress = math.min(1, self.exitTimer / suckDuration)
+        local eased = _easeOutQuad(progress)
 
-        if self.exitTimer >= cfg.devouringDuration then
-            self.exitPhase = "tear_close"
-            self.exitTimer = 0
-        end
-    elseif self.exitPhase == "tear_close" then
-        if self.exitTimer >= cfg.tearCloseDuration then
+        -- Move toward portal center
+        self.x = self.exitX + (self.exitPortalX - self.exitX) * eased
+        self.y = self.exitY + (self.exitPortalY - self.exitY) * eased
+
+        if self.exitTimer >= suckDuration then
             self.exitPhase = "consumed"
-            self.exitTimer = 0
             self.reachedBase = true
             self.dead = true
         end
@@ -431,26 +423,16 @@ function Creep:isExiting()
     return self.exitPhase ~= nil and self.exitPhase ~= "consumed"
 end
 
--- Get progress of current exit tear phase (0-1)
+-- Get progress of current exit tear phase (0-1) - no longer used for tears
 function Creep:getExitTearProgress()
-    local cfg = Config.EXIT_ANIMATION
-
-    if self.exitPhase == "tear_open" then
-        return self.exitTimer / cfg.tearOpenDuration
-    elseif self.exitPhase == "devouring" then
-        return 1.0  -- Tear fully open during devouring
-    elseif self.exitPhase == "tear_close" then
-        return 1.0 - (self.exitTimer / cfg.tearCloseDuration)
-    else
-        return 0  -- No tear
-    end
+    return 0
 end
 
 -- Get devouring progress (0-1) for visual fade/shrink during exit
 function Creep:getDevouringProgress()
-    if self.exitPhase ~= "devouring" then return 0 end
-    local cfg = Config.EXIT_ANIMATION
-    return _easeOutQuad(self.exitTimer / cfg.devouringDuration)
+    if self.exitPhase ~= "sucking" then return 0 end
+    local suckDuration = 0.3
+    return _easeOutQuad(math.min(1, self.exitTimer / suckDuration))
 end
 
 function Creep:update(dt, grid, flowField)
@@ -549,35 +531,51 @@ function Creep:update(dt, grid, flowField)
         local cells = grid.getCells()
         if cells[targetGridY] and cells[targetGridY][targetGridX] ~= 1 then
             targetX, targetY = grid.gridToScreen(targetGridX, targetGridY)
+            -- Apply per-creep wobble offset for natural movement variation
+            targetX = targetX + self.wobbleOffset.x * self.wobbleScale
+            targetY = targetY + self.wobbleOffset.y * self.wobbleScale
         else
             -- Target is blocked, stay in current cell center (flow field will be recomputed)
             targetX, targetY = grid.gridToScreen(gridX, gridY)
         end
     elseif gridY < 1 then
-        -- Above grid: find a valid entry column on row 1 immediately and move toward it
-        -- This prevents creeps from passing through towers on row 1
+        -- Above grid (row 0 or buffer): use flow field for row 0 if available
+        -- Otherwise find valid entry on row 1
         local cols = grid.getCols()
-        local bestCol = nil
-        local bestDist = math.huge
 
-        -- Search for nearest column on row 1 with a valid flow field entry
-        for col = 1, cols do
-            if flowField[1] and flowField[1][col] then
-                local colX, _ = grid.gridToScreen(col, 1)
-                local dist = math.abs(colX - self.x)
-                if dist < bestDist then
-                    bestDist = dist
-                    bestCol = col
+        -- Clamp gridX to valid column range (it's calculated from screenToGrid above)
+        local currentGridX = max(1, min(cols, gridX))
+
+        -- First try to use flow field at row 0 (spawn buffer)
+        local flow0 = flowField[0] and flowField[0][currentGridX]
+        if flow0 and (flow0.dx ~= 0 or flow0.dy ~= 0) then
+            -- Follow flow field at row 0
+            local targetGridX = currentGridX + flow0.dx
+            local targetGridY = 0 + flow0.dy
+            targetX, targetY = grid.gridToScreen(targetGridX, max(1, targetGridY))
+        else
+            -- Fallback: find nearest column on row 1 with valid flow field entry
+            local bestCol = nil
+            local bestDist = math.huge
+
+            for col = 1, cols do
+                if flowField[1] and flowField[1][col] then
+                    local colX, _ = grid.gridToScreen(col, 1)
+                    local dist = abs(colX - self.x)
+                    if dist < bestDist then
+                        bestDist = dist
+                        bestCol = col
+                    end
                 end
             end
-        end
 
-        if bestCol then
-            -- Move diagonally toward the valid entry point
-            targetX, targetY = grid.gridToScreen(bestCol, 1)
-        else
-            -- No valid entry (shouldn't happen): move toward center of row 1
-            targetX, targetY = grid.gridToScreen(math.ceil(cols / 2), 1)
+            if bestCol then
+                -- Move toward the valid entry point
+                targetX, targetY = grid.gridToScreen(bestCol, 1)
+            else
+                -- No valid entry - stay put (pathfinding validation should prevent this)
+                targetX, targetY = self.x, self.y
+            end
         end
     else
         -- On grid but no flow (shouldn't happen often): move toward base row

@@ -6,29 +6,56 @@ local Cursor = {}
 -- Cursor types
 Cursor.ARROW = "arrow"
 Cursor.POINTER = "pointer"
+Cursor.GRAB = "grab"
+Cursor.GRABBING = "grabbing"
+
+-- Cursor metadata (hotspot offsets and scale)
+local CURSOR_SCALE = 1.5
+
+local CURSOR_DATA = {
+    arrow = {
+        file = "assets/cursor_standard.png",
+        hotspotX = 0,
+        hotspotY = 0,
+        scale = CURSOR_SCALE,
+    },
+    pointer = {
+        file = "assets/hand_point.png",
+        hotspotX = 6,  -- Finger tip offset
+        hotspotY = 0,
+        scale = CURSOR_SCALE,
+    },
+    grab = {
+        file = "assets/hand_open.png",
+        hotspotX = 8,  -- Center of palm
+        hotspotY = 8,
+        scale = CURSOR_SCALE,
+    },
+    grabbing = {
+        file = "assets/hand_closed.png",
+        hotspotX = 8,  -- Center of palm
+        hotspotY = 8,
+        scale = CURSOR_SCALE,
+    },
+}
 
 -- State
 local state = {
     current = "arrow",
     images = {},
-    scale = 0.5,  -- Scale factor for cursor (half size)
 }
 
 function Cursor.init()
     -- Hide the OS cursor first, before anything else
     love.mouse.setVisible(false)
 
-    -- Load cursor images from assets
-    local ok, arrow = pcall(love.graphics.newImage, "assets/cursor_arrow.png")
-    if ok and arrow then
-        arrow:setFilter("nearest", "nearest")
-        state.images.arrow = arrow
-    end
-
-    local ok2, pointer = pcall(love.graphics.newImage, "assets/cursor_hand.png")
-    if ok2 and pointer then
-        pointer:setFilter("nearest", "nearest")
-        state.images.pointer = pointer
+    -- Load all cursor images from assets
+    for name, data in pairs(CURSOR_DATA) do
+        local ok, image = pcall(love.graphics.newImage, data.file)
+        if ok and image then
+            image:setFilter("nearest", "nearest")
+            state.images[name] = image
+        end
     end
 end
 
@@ -41,16 +68,27 @@ function Cursor.getCursor()
 end
 
 function Cursor.draw()
-    local mx, my = love.mouse.getPosition()
-    local image = state.images[state.current]
-
-    if not image then
-        image = state.images[Cursor.ARROW]
+    -- Ensure OS cursor stays hidden (can reappear on focus changes)
+    if love.mouse.isVisible() then
+        love.mouse.setVisible(false)
     end
 
-    if image then
+    local mx, my = love.mouse.getPosition()
+    local cursorName = state.current
+    local image = state.images[cursorName]
+    local data = CURSOR_DATA[cursorName]
+
+    -- Fallback to arrow if image not found
+    if not image then
+        image = state.images[Cursor.ARROW]
+        data = CURSOR_DATA[Cursor.ARROW]
+    end
+
+    if image and data then
         love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(image, mx, my, 0, state.scale, state.scale)
+        local drawX = mx - data.hotspotX * data.scale
+        local drawY = my - data.hotspotY * data.scale
+        love.graphics.draw(image, drawX, drawY, 0, data.scale, data.scale)
     end
 end
 

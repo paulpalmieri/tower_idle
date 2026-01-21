@@ -2,6 +2,8 @@
 -- Bloom effect: extracts emissive sources, blurs them, and composites
 
 local Config = require("src.config")
+local Settings = require("src.ui.settings")
+local Camera = require("src.core.camera")
 
 local Bloom = {}
 
@@ -19,8 +21,9 @@ local state = {
 
 function Bloom.init()
     -- Half resolution for glow (performance optimization)
-    state.glowWidth = math.floor(Config.SCREEN_WIDTH / 2)
-    state.glowHeight = math.floor(Config.SCREEN_HEIGHT / 2)
+    local gameWidth, gameHeight = Settings.getGameDimensions()
+    state.glowWidth = math.floor(gameWidth / 2)
+    state.glowHeight = math.floor(gameHeight / 2)
 
     -- Create canvases with linear filtering for smooth blur
     state.glowCanvas = love.graphics.newCanvas(state.glowWidth, state.glowHeight)
@@ -44,8 +47,9 @@ function Bloom.init()
 end
 
 function Bloom.resize()
-    state.glowWidth = math.floor(Config.SCREEN_WIDTH / 2)
-    state.glowHeight = math.floor(Config.SCREEN_HEIGHT / 2)
+    local gameWidth, gameHeight = Settings.getGameDimensions()
+    state.glowWidth = math.floor(gameWidth / 2)
+    state.glowHeight = math.floor(gameHeight / 2)
 
     state.glowCanvas = love.graphics.newCanvas(state.glowWidth, state.glowHeight)
     state.glowCanvas:setFilter("linear", "linear")
@@ -57,11 +61,12 @@ function Bloom.resize()
     state.blurCanvasB:setFilter("linear", "linear")
 end
 
--- Draw a soft glow circle at given position
+-- Draw a soft glow circle at given position (world coordinates)
 local function drawGlowCircle(x, y, radius, r, g, b, intensity, pulse)
-    -- Scale coordinates to half resolution
-    local hx = x / 2
-    local hy = y / 2
+    -- Convert world coordinates to screen coordinates, then scale to half resolution
+    local screenX, screenY = Camera.worldToScreen(x, y)
+    local hx = screenX / 2
+    local hy = screenY / 2
     local hr = radius / 2
 
     -- Apply pulsing if enabled

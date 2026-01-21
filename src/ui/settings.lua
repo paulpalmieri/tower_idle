@@ -9,9 +9,12 @@ local Audio = require("src.systems.audio")
 
 local Settings = {}
 
--- Base game resolution (the game is designed for this)
-local BASE_WIDTH = 1280
-local BASE_HEIGHT = 920
+-- Fixed 16:9 canvas resolution (the game is designed for this)
+-- Canvas is always this size, scaled to fit any screen with letterboxing
+local CANVAS_WIDTH = 1280    -- Fixed canvas width
+local CANVAS_HEIGHT = 720    -- Fixed canvas height (16:9 aspect ratio)
+local ASPECT_RATIO = CANVAS_WIDTH / CANVAS_HEIGHT  -- 1.777...
+local PANEL_WIDTH = 320      -- Narrower overlay panel width
 
 -- Private state
 local state = {
@@ -39,8 +42,11 @@ local state = {
     scale = 1,
     offsetX = 0,
     offsetY = 0,
-    windowWidth = BASE_WIDTH,
-    windowHeight = BASE_HEIGHT,
+    windowWidth = CANVAS_WIDTH,
+    windowHeight = CANVAS_HEIGHT,
+    -- Fixed game dimensions (always 1280x720)
+    gameWidth = CANVAS_WIDTH,
+    gameHeight = CANVAS_HEIGHT,
 }
 
 -- =============================================================================
@@ -180,16 +186,24 @@ local function _updateScale()
     state.windowWidth = windowW
     state.windowHeight = windowH
 
-    -- Calculate scale to fit base resolution in window while maintaining aspect ratio
-    local scaleX = windowW / BASE_WIDTH
-    local scaleY = windowH / BASE_HEIGHT
-    state.scale = math.min(scaleX, scaleY)
+    -- Fixed game dimensions (always 1280x720)
+    state.gameWidth = CANVAS_WIDTH
+    state.gameHeight = CANVAS_HEIGHT
 
-    -- Calculate offset to center the game
-    local scaledWidth = BASE_WIDTH * state.scale
-    local scaledHeight = BASE_HEIGHT * state.scale
-    state.offsetX = (windowW - scaledWidth) / 2
-    state.offsetY = (windowH - scaledHeight) / 2
+    -- Scale to fit window, preserving 16:9 aspect ratio
+    local windowAspect = windowW / windowH
+
+    if windowAspect > ASPECT_RATIO then
+        -- Window wider than 16:9: pillarbox (black bars on sides)
+        state.scale = windowH / CANVAS_HEIGHT
+        state.offsetX = math.floor((windowW - CANVAS_WIDTH * state.scale) / 2)
+        state.offsetY = 0
+    else
+        -- Window taller than 16:9: letterbox (black bars top/bottom)
+        state.scale = windowW / CANVAS_WIDTH
+        state.offsetX = 0
+        state.offsetY = math.floor((windowH - CANVAS_HEIGHT * state.scale) / 2)
+    end
 end
 
 local function _applyWindowMode()
@@ -224,6 +238,11 @@ local function _applyWindowMode()
         scale = state.scale,
         offsetX = state.offsetX,
         offsetY = state.offsetY,
+        gameWidth = state.gameWidth,
+        gameHeight = state.gameHeight,
+        -- Panel now overlays, so play area is full canvas width
+        playAreaWidth = state.gameWidth,
+        panelWidth = PANEL_WIDTH,
     })
 end
 
@@ -262,8 +281,22 @@ function Settings.init()
     local _, _, flags = love.window.getMode()
     state.borderless = flags.borderless or flags.fullscreen
 
-    -- Initialize scale
+    -- Initialize scale and dynamic dimensions
     _updateScale()
+
+    -- Emit initial window dimensions so other systems can initialize properly
+    EventBus.emit("window_resized", {
+        width = state.windowWidth,
+        height = state.windowHeight,
+        scale = state.scale,
+        offsetX = state.offsetX,
+        offsetY = state.offsetY,
+        gameWidth = state.gameWidth,
+        gameHeight = state.gameHeight,
+        -- Panel now overlays, so play area is full canvas width
+        playAreaWidth = state.gameWidth,
+        panelWidth = PANEL_WIDTH,
+    })
 
     _calculateLayout()
 end
@@ -582,6 +615,26 @@ function Settings.getWindowDimensions()
     return state.windowWidth, state.windowHeight
 end
 
+-- Get the current game dimensions (width is dynamic based on aspect ratio)
+function Settings.getGameDimensions()
+    return state.gameWidth, state.gameHeight
+end
+
+-- Get the fixed panel width
+function Settings.getPanelWidth()
+    return PANEL_WIDTH
+end
+
+-- Get the play area width (full canvas width since panel overlays)
+function Settings.getPlayAreaWidth()
+    return state.gameWidth
+end
+
+-- Get the panel X position (where panel overlay starts)
+function Settings.getPanelX()
+    return state.gameWidth - PANEL_WIDTH
+end
+
 -- Convert screen coordinates to game coordinates
 function Settings.screenToGame(screenX, screenY)
     local gameX = (screenX - state.offsetX) / state.scale
@@ -632,6 +685,14 @@ function Settings.toggleBloom()
     local Bloom = require("src.rendering.bloom")
     Bloom.setEnabled(state.bloomEnabled)
     return state.bloomEnabled
+end
+
+-- Toggle borderless mode (for keyboard shortcut)
+function Settings.toggleBorderless()
+    state.borderless = not state.borderless
+    _applyWindowMode()
+    _calculateLayout()
+    return state.borderless
 end
 
 -- =============================================================================

@@ -4,6 +4,8 @@
 local Config = require("src.config")
 local Fonts = require("src.rendering.fonts")
 local PixelFrames = require("src.ui.pixel_frames")
+local Settings = require("src.ui.settings")
+local Camera = require("src.core.camera")
 
 local Tooltip = {}
 
@@ -20,8 +22,9 @@ local state = {
 
 local function _calculateTooltipPosition(tower)
     local cfg = Config.UI.tooltip
-    local screenWidth = Config.SCREEN_WIDTH
-    local screenHeight = Config.SCREEN_HEIGHT
+    -- Use panel X position for clamping (tooltip shouldn't overlap panel)
+    local screenWidth = Settings.getPanelX()
+    local _, screenHeight = Settings.getGameDimensions()
 
     -- Calculate total height:
     -- Header (name + level)
@@ -35,13 +38,16 @@ local function _calculateTooltipPosition(tower)
     state.width = cfg.width
     state.height = cfg.padding * 2 + headerHeight + statsHeight + buttonsHeight
 
+    -- Convert tower world coordinates to screen coordinates
+    local towerScreenX, towerScreenY = Camera.worldToScreen(tower.x, tower.y)
+
     -- Position to the right of the tower by default
-    local tooltipX = tower.x + cfg.offsetX
-    local tooltipY = tower.y + cfg.offsetY
+    local tooltipX = towerScreenX + cfg.offsetX
+    local tooltipY = towerScreenY + cfg.offsetY
 
     -- Clamp to screen bounds
     if tooltipX + state.width > screenWidth then
-        tooltipX = tower.x - state.width - cfg.offsetX
+        tooltipX = towerScreenX - state.width - cfg.offsetX
     end
     if tooltipX < 0 then
         tooltipX = 0

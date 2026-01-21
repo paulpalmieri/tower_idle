@@ -18,12 +18,8 @@ function ExitPortal:new(x, y)
     self.time = 0
     self.seed = math.random(1000) + 5000
 
-    -- Exit/breach tracking (keep existing)
+    -- Exit tracking
     self.activeExits = {}
-    self.exitParticles = {}
-    self.breachTendrils = {}
-    self.surgePulse = 0
-    self.surgeTimer = 0
 
     -- Gravity pull particles
     self.gravityParticles = {}
@@ -103,14 +99,6 @@ end
 function ExitPortal:update(dt)
     self.time = self.time + dt
 
-    -- Update surge pulse
-    if self.surgeTimer > 0 then
-        self.surgeTimer = self.surgeTimer - dt
-        self.surgePulse = self.surgeTimer / 0.4
-    else
-        self.surgePulse = 0
-    end
-
     -- Update gravity particles (pull inward)
     local cfg = Config.VOID_CORE
     for i = #self.gravityParticles, 1, -1 do
@@ -131,37 +119,6 @@ function ExitPortal:update(dt)
             table.remove(self.activeExits, i)
         end
     end
-
-    -- Update particles
-    for i = #self.exitParticles, 1, -1 do
-        local p = self.exitParticles[i]
-        p.x = p.x + p.vx * dt
-        p.y = p.y + p.vy * dt
-        -- Gravity for burst particles
-        if p.type == "burst" then
-            p.vy = p.vy + 150 * dt
-        end
-        p.life = p.life - dt
-        if p.life <= 0 then
-            table.remove(self.exitParticles, i)
-        end
-    end
-
-    -- Update tendrils
-    for i = #self.breachTendrils, 1, -1 do
-        local t = self.breachTendrils[i]
-        -- Tendrils extend quickly then retract
-        local lifeProgress = 1 - (t.life / t.maxLife)
-        if lifeProgress < 0.3 then
-            t.progress = lifeProgress / 0.3  -- Extend
-        else
-            t.progress = 1 - ((lifeProgress - 0.3) / 0.7)  -- Retract
-        end
-        t.life = t.life - dt
-        if t.life <= 0 then
-            table.remove(self.breachTendrils, i)
-        end
-    end
 end
 
 -- Register a creep that is exiting for tear effect rendering
@@ -172,45 +129,9 @@ function ExitPortal:registerExit(creep)
     self:triggerBreach(creep.x, creep.y)
 end
 
--- Trigger dramatic breach effects when a creep enters
+-- Trigger breach effects when a creep enters (simplified)
 function ExitPortal:triggerBreach(creepX, creepY)
-    -- Add void tendrils reaching toward the breach point
-    local tendrilCount = 4 + math.random(3)
-    for i = 1, tendrilCount do
-        local angle = (i / tendrilCount) * math.pi * 2 + math.random() * 0.5
-        table.insert(self.breachTendrils, {
-            startX = self.x,
-            startY = self.y,
-            targetX = creepX + math.cos(angle) * 20,
-            targetY = creepY + math.sin(angle) * 20,
-            angle = angle,
-            progress = 0,
-            life = 0.5 + math.random() * 0.3,
-            maxLife = 0.8,
-            seed = math.random(1000),
-            width = 3 + math.random() * 2,
-        })
-    end
-
-    -- Trigger portal surge
-    self.surgePulse = 1.0
-    self.surgeTimer = 0.4
-
-    -- Spawn burst of particles
-    for i = 1, 12 do
-        local angle = (i / 12) * math.pi * 2 + math.random() * 0.3
-        local speed = 80 + math.random() * 60
-        table.insert(self.exitParticles, {
-            x = creepX,
-            y = creepY,
-            vx = math.cos(angle) * speed,
-            vy = math.sin(angle) * speed,
-            life = 0.4 + math.random() * 0.3,
-            maxLife = 0.7,
-            size = 3 + math.random() * 3,
-            type = "burst",
-        })
-    end
+    -- Simplified: no tendrils, surge, or burst particles
 end
 
 function ExitPortal:draw()
@@ -219,27 +140,13 @@ function ExitPortal:draw()
     local ps = self.pixelSize
     local t = self.time
     local radius = self.size
-
-    -- Apply surge boost
-    local surgeBoost = self.surgePulse * 0.15
-    local effectiveRadius = radius * (1 + surgeBoost)
+    local effectiveRadius = radius
 
     -- 1. Draw shadow
     local shadowCfg = cfg.shadow
     love.graphics.setColor(0, 0, 0, shadowCfg.alpha)
     love.graphics.ellipse("fill", self.x, self.y + radius * shadowCfg.offsetY,
         radius * shadowCfg.width, radius * shadowCfg.height)
-
-    -- Draw surge glow behind portal (purple)
-    if self.surgePulse > 0 then
-        love.graphics.setBlendMode("add")
-        local glowAlpha = self.surgePulse * 0.6
-        love.graphics.setColor(0.5, 0.2, 0.7, glowAlpha * 0.3)
-        love.graphics.circle("fill", self.x, self.y, radius * 2.5)
-        love.graphics.setColor(0.9, 0.7, 0.3, glowAlpha * 0.5)
-        love.graphics.circle("fill", self.x, self.y, radius * 1.8)
-        love.graphics.setBlendMode("alpha")
-    end
 
     -- 2. Draw gravity particles (behind main body)
     self:drawGravityParticles()
@@ -323,175 +230,24 @@ function ExitPortal:drawGravityParticles()
     end
 end
 
--- Draw tear effects for exiting creeps
+-- Draw tear effects for exiting creeps (simplified - no tears)
 function ExitPortal:drawTears()
-    for _, creep in ipairs(self.activeExits) do
-        local tearProgress = creep:getExitTearProgress()
-        if tearProgress > 0 then
-            self:drawSingleTear(creep.exitX, creep.exitY, tearProgress)
-        end
-    end
+    -- No tear effects - creeps just get sucked into the void
 end
 
--- Draw a single tear/rift at the given position (RED version)
+-- Draw a single tear/rift (no longer used)
 function ExitPortal:drawSingleTear(cx, cy, progress)
-    local cfg = Config.EXIT_ANIMATION
-    local colors = cfg.tearColors
-    local ps = cfg.tearPixelSize
-    local t = self.time
-
-    local maxWidth = cfg.tearWidth
-    local maxHeight = cfg.tearHeight
-    local width = maxWidth * progress
-    local height = maxHeight * progress
-
-    -- Number of pixels to draw
-    local cols = math.ceil(width / ps)
-    local rows = math.ceil(height / ps)
-
-    -- Draw tear pixel by pixel
-    for py = -rows / 2, rows / 2 do
-        for px = -cols / 2, cols / 2 do
-            local screenX = cx + px * ps - ps / 2
-            local screenY = cy + py * ps - ps / 2
-
-            -- Distance from center of tear
-            local dx = px / (cols / 2 + 0.1)
-            local dy = py / (rows / 2 + 0.1)
-            local dist = math.sqrt(dx * dx + dy * dy)
-
-            -- Skip pixels outside tear shape
-            if dist > 1 then
-                goto continue
-            end
-
-            -- Jagged edges using noise
-            local edgeNoise = Procedural.fbm(px * 0.5 + t * 2, py * 0.3 + t, self.seed + 500, 2)
-            local jaggedThreshold = 0.7 + edgeNoise * 0.3
-
-            if dist > jaggedThreshold then
-                goto continue
-            end
-
-            -- Color based on distance from center
-            local r, g, b, a
-
-            -- Outer edge glow (orange-red)
-            if dist > jaggedThreshold - 0.3 then
-                local pulse = math.sin(t * 4 + py * 0.5) * 0.3 + 0.7
-                r = colors.edge[1] * pulse
-                g = colors.edge[2] * pulse
-                b = colors.edge[3] * pulse
-                a = progress
-            -- Inner glow (warm orange-white)
-            elseif dist > 0.3 then
-                local blend = (dist - 0.3) / (jaggedThreshold - 0.3 - 0.3)
-                r = colors.inner[1] * (1 - blend * 0.3)
-                g = colors.inner[2] * (1 - blend * 0.4)
-                b = colors.inner[3] * (1 - blend * 0.5)
-                a = progress
-            else
-                -- Core: dark red void
-                local n = Procedural.fbm(px * 0.2 + t * 0.5, py * 0.4 + t * 0.3, self.seed + 600, 2)
-                r = colors.void[1] + n * 0.08
-                g = colors.void[2] + n * 0.02
-                b = colors.void[3] + n * 0.02
-                a = progress
-            end
-
-            love.graphics.setColor(r, g, b, a)
-            love.graphics.rectangle("fill", screenX, screenY, ps, ps)
-
-            ::continue::
-        end
-    end
+    -- No tears
 end
 
--- Draw spark particles from breach (gold/purple)
+-- Draw spark particles (simplified - no longer used)
 function ExitPortal:drawExitParticles()
-    local cfg = Config.EXIT_ANIMATION.particles
-
-    for _, p in ipairs(self.exitParticles) do
-        local alpha = p.life / p.maxLife
-        local ps = p.size or cfg.size
-
-        if p.type == "burst" then
-            -- Burst particles: gold/purple embers
-            love.graphics.setBlendMode("add")
-            -- Purple outer glow
-            love.graphics.setColor(0.6, 0.25, 0.8, alpha * 0.4)
-            love.graphics.circle("fill", p.x, p.y, ps * 2)
-            -- Gold core
-            love.graphics.setColor(1.0, 0.85, 0.4, alpha * 0.8)
-            love.graphics.rectangle("fill", p.x - ps / 2, p.y - ps / 2, ps, ps)
-            -- Bright gold center
-            love.graphics.setColor(1.0, 0.95, 0.7, alpha)
-            love.graphics.rectangle("fill", p.x - ps / 4, p.y - ps / 4, ps / 2, ps / 2)
-            love.graphics.setBlendMode("alpha")
-        else
-            -- Regular tear particles (gold)
-            love.graphics.setColor(1.0, 0.85, 0.4, alpha)
-            love.graphics.rectangle("fill", p.x - ps / 2, p.y - ps / 2, ps, ps)
-        end
-    end
+    -- No particles
 end
 
--- Draw breach effects (tendrils reaching out from portal - purple with gold core)
+-- Draw breach effects (simplified - no longer used)
 function ExitPortal:drawBreachEffects()
-    -- Draw tendrils
-    for _, t in ipairs(self.breachTendrils) do
-        if t.progress > 0 then
-            local alpha = t.life / t.maxLife
-
-            -- Calculate tendril endpoint based on progress
-            local dx = t.targetX - t.startX
-            local dy = t.targetY - t.startY
-            local endX = t.startX + dx * t.progress
-            local endY = t.startY + dy * t.progress
-
-            -- Draw tendril as jagged lightning-like line
-            local segments = 6
-            local prevX, prevY = t.startX, t.startY
-
-            love.graphics.setBlendMode("add")
-            for i = 1, segments do
-                local segProgress = i / segments
-                if segProgress > t.progress then break end
-
-                local segX = t.startX + dx * segProgress
-                local segY = t.startY + dy * segProgress
-
-                -- Add jaggedness
-                if i < segments then
-                    local jag = math.sin(segProgress * 10 + t.seed + self.time * 8) * 8
-                    local perpX = -dy / (math.sqrt(dx*dx + dy*dy) + 0.1)
-                    local perpY = dx / (math.sqrt(dx*dx + dy*dy) + 0.1)
-                    segX = segX + perpX * jag
-                    segY = segY + perpY * jag
-                end
-
-                -- Purple glow (outer)
-                love.graphics.setColor(0.5, 0.2, 0.7, alpha * 0.4)
-                love.graphics.setLineWidth(t.width * 2)
-                love.graphics.line(prevX, prevY, segX, segY)
-
-                -- Gold core
-                love.graphics.setColor(1.0, 0.8, 0.3, alpha * 0.8)
-                love.graphics.setLineWidth(t.width)
-                love.graphics.line(prevX, prevY, segX, segY)
-
-                -- Bright gold center
-                love.graphics.setColor(1.0, 0.95, 0.6, alpha)
-                love.graphics.setLineWidth(1)
-                love.graphics.line(prevX, prevY, segX, segY)
-
-                prevX, prevY = segX, segY
-            end
-            love.graphics.setBlendMode("alpha")
-        end
-    end
-
-    love.graphics.setLineWidth(1)
+    -- No tendrils
 end
 
 -- Get light parameters for the lighting system (purple glow)

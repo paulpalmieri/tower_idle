@@ -4,6 +4,7 @@
 local Config = require("src.config")
 local Fonts = require("src.rendering.fonts")
 local PixelFrames = require("src.ui.pixel_frames")
+local Settings = require("src.ui.settings")
 
 local Shortcuts = {}
 
@@ -34,7 +35,14 @@ local SHORTCUTS = {
     { category = "GAME" },
     { key = "S", description = "Cycle game speed" },
     { key = "P", description = "Settings menu" },
+    { key = "B", description = "Toggle borderless" },
     { key = "ESC", description = "Cancel / Deselect / Pause" },
+
+    { category = "CAMERA" },
+    { key = "Scroll", description = "Zoom in/out" },
+    { key = "+/-", description = "Zoom in/out" },
+    { key = "0", description = "Reset zoom" },
+    { key = "Mouse", description = "Peek (move to screen edges)" },
 
     { category = "DEBUG / VISUAL" },
     { key = "D", description = "Toggle debug overlay" },
@@ -48,9 +56,10 @@ local SHORTCUTS = {
 -- =============================================================================
 
 local function _calculateLayout()
-    -- Center in window
-    state.x = (Config.SCREEN_WIDTH - state.width) / 2
-    state.y = (Config.SCREEN_HEIGHT - state.height) / 2
+    -- Center in window (use dynamic dimensions for widescreen support)
+    local gameW, gameH = Settings.getGameDimensions()
+    state.x = (gameW - state.width) / 2
+    state.y = (gameH - state.height) / 2
 end
 
 -- =============================================================================
@@ -80,13 +89,17 @@ end
 function Shortcuts.draw()
     if not state.visible then return end
 
+    -- Recalculate layout in case window dimensions changed
+    _calculateLayout()
+
     local padding = 16
     local lineHeight = 20
     local categorySpacing = 8
 
-    -- Darken background
+    -- Darken background (use dynamic dimensions)
+    local gameW, gameH = Settings.getGameDimensions()
     love.graphics.setColor(0, 0, 0, 0.7)
-    love.graphics.rectangle("fill", 0, 0, Config.SCREEN_WIDTH, Config.SCREEN_HEIGHT)
+    love.graphics.rectangle("fill", 0, 0, gameW, gameH)
 
     -- Main frame
     PixelFrames.draw8BitFrame(state.x, state.y, state.width, state.height, "settings")

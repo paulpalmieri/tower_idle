@@ -12,21 +12,48 @@ local Config = {}
 Config.MAX_DELTA_TIME = 1/30  -- Cap delta time to prevent physics issues
 
 -- =============================================================================
--- SCREEN
+-- SCREEN (Fixed 16:9 canvas with letterboxing)
 -- =============================================================================
 
-Config.SCREEN_WIDTH = 1280
-Config.SCREEN_HEIGHT = 920   -- Taller to fit 7x10 grid + exit portal
-Config.PLAY_AREA_RATIO = 0.70  -- Left side is play area
-Config.PANEL_RATIO = 0.30      -- Right side is UI panel (30%)
+Config.CANVAS_WIDTH = 1280       -- Fixed canvas width (16:9 ratio)
+Config.CANVAS_HEIGHT = 720       -- Fixed canvas height (16:9 ratio)
+Config.PANEL_WIDTH = 320         -- Narrower overlay panel width
+Config.PANEL_ALPHA = 0.92        -- Semi-transparent panel background
+
+-- Legacy aliases (for backwards compatibility)
+Config.SCREEN_WIDTH = Config.CANVAS_WIDTH
+Config.SCREEN_HEIGHT = Config.CANVAS_HEIGHT
+Config.PLAY_AREA_RATIO = 0.75    -- Legacy: play area ratio (unused with fixed canvas)
+Config.PANEL_RATIO = 0.25        -- Legacy: panel ratio (unused with fixed canvas)
+
+-- =============================================================================
+-- WORLD (Scrollable play area - larger than screen)
+-- At zoom 0.5, visible area is 2560x1440, so world must be at least that size
+-- =============================================================================
+
+Config.WORLD_WIDTH = 2800     -- Total scrollable world width (fits zoom 0.5 + margin)
+Config.WORLD_HEIGHT = 1600    -- Total scrollable world height (fits zoom 0.5 + margin)
+
+-- =============================================================================
+-- CAMERA (drag-to-pan with zoom)
+-- =============================================================================
+
+Config.CAMERA = {
+    -- Zoom settings
+    minZoom = 0.5,            -- Zoomed out (see more) - at this zoom, most of world visible
+    maxZoom = 1.5,            -- Zoomed in (see less)
+    defaultZoom = 1.0,        -- Starting zoom level (1280x720 viewport)
+    zoomSpeed = 0.1,          -- Mouse wheel sensitivity
+    zoomSmoothing = 8.0,      -- Smooth zoom interpolation speed
+}
 
 -- =============================================================================
 -- GRID
 -- =============================================================================
 
 Config.CELL_SIZE = 64          -- Must be multiple of 16 for clean sprite scaling (64/16 = 4x)
-Config.GRID_COLS = 7           -- Fixed grid width (narrower)
-Config.GRID_ROWS = 10          -- Fixed grid height (taller - 10 rows + void + buffer fits 880px screen)
+Config.GRID_COLS = 14          -- Double columns (was 7 at 64px)
+Config.GRID_ROWS = 20          -- Double rows (was 10 at 64px)
 Config.BASE_ROWS = 1           -- Bottom row is base zone
 Config.VOID_HEIGHT = 2         -- Void height in cell units (above grid) - more room for portal
 Config.VOID_BUFFER = 0.5       -- Buffer below void where creeps move before entering grid (in cell units)
@@ -106,8 +133,8 @@ Config.TOWERS = {
     },
 }
 
--- Tower visual settings
-Config.TOWER_SIZE = 16         -- Base radius
+-- Tower visual settings (scaled relative to cell size)
+Config.TOWER_SIZE = Config.CELL_SIZE / 4        -- Base radius (1/4 of cell)
 Config.TOWER_BARREL_LENGTH = 1.2  -- Multiplier of size
 
 -- Tower building animation
@@ -127,13 +154,14 @@ Config.TOWER_SHADOW = {
 }
 
 -- Tower dithering (pixel-art grounding effect at tower base)
+-- Values scaled relative to cell size for easy grid resizing
 Config.TOWER_DITHER = {
     enabled = true,
-    pixelSize = 4,            -- Match background pixel size (crunchy retro look)
-    yRatio = 0.5,             -- Flattened oval for perspective
-    radius = 36,              -- Extends slightly beyond tower base
-    offsetY = 12,             -- Centered beneath tower base
-    alpha = 0.5,              -- More subtle
+    pixelSize = Config.CELL_SIZE / 16,    -- Scales with cell (64->4, 32->2)
+    yRatio = 0.5,                          -- Flattened oval for perspective
+    radius = Config.CELL_SIZE * 0.5625,    -- Extends slightly beyond tower base
+    offsetY = Config.CELL_SIZE * 0.1875,   -- Centered beneath tower base
+    alpha = 0.5,                           -- More subtle
     -- Dark void corruption stain
     coreColor = {0.02, 0.01, 0.04},  -- Deep desaturated indigo (almost black)
     coreRadius = 0.5,                -- Core extends to 50% of radius
@@ -314,6 +342,9 @@ Config.CREEPS = {
     },
 }
 
+-- Creep path wobble (pixels of random offset when following flow field)
+Config.CREEP_WOBBLE_SCALE = 10
+
 -- Visual configuration for void spawn rendering (pixel art style)
 Config.VOID_SPAWN = {
     pixelSize = 3,            -- Size of each "pixel" in the sprite
@@ -423,9 +454,9 @@ Config.RED_BOSS = {
 
 -- Visual configuration for the Void Portal (circular, creep-style rendering)
 Config.VOID_PORTAL = {
-    baseSize = 42,              -- 3x creep size (14 * 3)
-    maxSize = 120,              -- Maximum growth (fills spawn area)
-    topPadding = 20,            -- Padding from top of spawn area
+    baseSize = 84,              -- 3x creep size doubled (42 * 2)
+    maxSize = 240,              -- Maximum growth doubled (120 * 2)
+    topPadding = 40,            -- Padding from top of spawn area doubled (20 * 2)
     pixelSize = 3,              -- Same as exit portal
     coreSize = 12,              -- Dark squared center size (in pixels)
     distortionFrequency = 2.0,  -- Same as exit portal
@@ -637,6 +668,30 @@ Config.SKILL_TREE = {
     startButtonY = 850,
     startButtonWidth = 200,
     startButtonHeight = 50,
+
+    -- Gravity dust effect (particles pulled toward center void)
+    gravityDust = {
+        particleCount = 80,          -- Number of active particles
+        spawnRadius = {50, 90},      -- Min/max spawn distance from center
+        pullStrength = 45,           -- Base gravity pull toward center
+        pullAcceleration = 60,       -- Additional acceleration as particles get closer
+        maxSpeed = 150,              -- Maximum particle velocity
+        particleSize = {2, 4},       -- Min/max pixel size
+        fadeStartRadius = 50,        -- Start fading when this close to center
+        despawnRadius = 20,          -- Respawn when this close to center
+        -- Colors (void-themed purples and teals, subtle)
+        colors = {
+            {0.5, 0.3, 0.7, 0.5},    -- Deep purple
+            {0.6, 0.4, 0.8, 0.4},    -- Mid purple
+            {0.4, 0.5, 0.7, 0.35},   -- Muted blue-purple
+            {0.3, 0.6, 0.7, 0.4},    -- Teal
+            {0.7, 0.5, 0.9, 0.5},    -- Bright purple
+        },
+        trailLength = 2,             -- Number of trail segments
+        trailFade = 0.5,             -- Trail opacity multiplier per segment
+        wobbleAmount = 8,            -- Slight orbital wobble
+        wobbleSpeed = 2.0,           -- Wobble animation speed
+    },
 }
 
 -- =============================================================================
@@ -656,6 +711,7 @@ Config.FLOATING_NUMBERS = {
     goldColor = {0.95, 0.78, 0.25},     -- Gold for rewards
     shardColor = {0.65, 0.45, 0.95},    -- Purple for void shards
     crystalColor = {0.4, 0.85, 1.0},    -- Cyan for void crystals
+    lifeColor = {1.0, 0.3, 0.35},       -- Red for life loss
 
     -- Spread/variation
     spreadX = 20,             -- Random horizontal spread
@@ -1032,8 +1088,8 @@ Config.BACKGROUND = {
 -- =============================================================================
 
 Config.EXIT_PORTAL = {
-    baseSize = 42,              -- Same size as Void
-    bottomPadding = 30,         -- Padding from bottom of screen
+    baseSize = 84,              -- Same size as Void doubled (42 * 2)
+    bottomPadding = 140,        -- Padding from bottom doubled (70 * 2)
     pixelSize = 3,              -- Same as creep
     distortionFrequency = 2.0,  -- Same as creep
     octaves = 3,                -- Same as creep

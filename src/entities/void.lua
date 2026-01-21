@@ -24,6 +24,14 @@ function Void:new(x, y)
     self.thresholdPulseTimer = 0
     self.thresholdPulseActive = false
 
+    -- Hover state (like skill tree void)
+    self.isHovered = false
+    self.hoverScale = 1.0
+
+    -- Click animation state (quick expand/contract)
+    self.clickScale = 1.0
+    self.clickScaleVelocity = 0
+
     -- Animation state
     self.clickFlash = 0
     self.time = 0
@@ -140,6 +148,25 @@ function Void:update(dt)
     -- Update threshold pulse animation
     if self.thresholdPulseActive then
         self:updateThresholdPulse(dt)
+    end
+
+    -- Smoothly interpolate hover scale (like skill tree void)
+    local targetHoverScale = self.isHovered and 1.15 or 1.0
+    self.hoverScale = self.hoverScale + (targetHoverScale - self.hoverScale) * dt * 10
+
+    -- Update click scale animation (spring-like expand/contract)
+    if self.clickScale ~= 1.0 or self.clickScaleVelocity ~= 0 then
+        -- Spring physics: pull toward 1.0
+        local springForce = (1.0 - self.clickScale) * 80  -- Stiffness
+        local damping = self.clickScaleVelocity * 8       -- Damping
+        self.clickScaleVelocity = self.clickScaleVelocity + (springForce - damping) * dt
+        self.clickScale = self.clickScale + self.clickScaleVelocity * dt
+
+        -- Settle when close enough
+        if math.abs(self.clickScale - 1.0) < 0.001 and math.abs(self.clickScaleVelocity) < 0.01 then
+            self.clickScale = 1.0
+            self.clickScaleVelocity = 0
+        end
     end
 
     -- Decay click flash
@@ -291,8 +318,12 @@ function Void:click()
     end
     -- After max clicks, clicking still works but anger stays at tier 4
 
-    -- Trigger click flash
+    -- Trigger click flash (white)
     self.clickFlash = 1
+
+    -- Trigger quick expand/contract animation
+    self.clickScale = 1.2  -- Start expanded
+    self.clickScaleVelocity = -2.0  -- Initial inward velocity for snappy feel
 
     -- Emit event
     EventBus.emit("void_clicked", {
@@ -303,6 +334,11 @@ function Void:click()
     })
 
     return income
+end
+
+-- Set hover state (called from init.lua)
+function Void:setHovered(hovered)
+    self.isHovered = hovered
 end
 
 -- Getters for click-based system
@@ -346,9 +382,10 @@ function Void:draw()
     local anger = self:getAngerLevel()
     local radius = self.size
 
-    -- Apply threshold pulse scale
+    -- Apply all scale effects: threshold pulse, hover, and click
     local pulseScale = self:getThresholdPulseScale()
-    radius = radius * pulseScale
+    local totalScale = pulseScale * self.hoverScale * self.clickScale
+    radius = radius * totalScale
 
     -- Draw flattened ellipse shadow below portal
     local shadowCfg = cfg.shadow
@@ -365,19 +402,22 @@ function Void:draw()
     local sparkleTimeY = math.floor(t * 5)
     local sparkleThreshold = cfg.sparkleThreshold or 0.96
 
+    -- Scale pixel size to avoid gaps when scaled, with slight overlap
+    local scaledPs = ps * totalScale + 0.5
+
     -- Draw each pixel with animated void effects (matching ExitPortal:draw)
     for _, p in ipairs(self.pixels) do
         local wobbleNoise = math.sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
         local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
 
         -- Skip pixels outside the current animated boundary
-        if p.dist * pulseScale >= animatedEdgeRadius then
+        if p.dist * totalScale >= animatedEdgeRadius then
             goto continue
         end
 
-        local isEdge = p.dist * pulseScale > animatedEdgeRadius - ps * 1.5
-        local screenX = self.x + p.relX * pulseScale - ps / 2
-        local screenY = self.y + p.relY * pulseScale - ps / 2
+        local isEdge = p.dist * totalScale > animatedEdgeRadius - ps * 1.5
+        local screenX = math.floor(self.x + p.relX * totalScale - scaledPs / 2)
+        local screenY = math.floor(self.y + p.relY * totalScale - scaledPs / 2)
 
         -- Check if in squared core region (pitch black center)
         local inCore = math.abs(p.relX) < cfg.coreSize and math.abs(p.relY) < cfg.coreSize
@@ -416,16 +456,18 @@ function Void:draw()
             g = math.max(0, g - angerShift * 0.3)
         end
 
+        -- Click flash: blend pixels toward white
+        if self.clickFlash > 0 then
+            local flash = self.clickFlash
+            r = r + (1 - r) * flash
+            g = g + (1 - g) * flash
+            b = b + (1 - b) * flash
+        end
+
         love.graphics.setColor(r, g, b)
-        love.graphics.rectangle("fill", screenX, screenY, ps, ps)
+        love.graphics.rectangle("fill", screenX, screenY, scaledPs, scaledPs)
 
         ::continue::
-    end
-
-    -- Click flash overlay (circular)
-    if self.clickFlash > 0 then
-        love.graphics.setColor(0.8, 0.5, 1, self.clickFlash * 0.5)
-        love.graphics.circle("fill", self.x, self.y, self.size * pulseScale)
     end
 
 end
