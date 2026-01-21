@@ -32,7 +32,7 @@ Config.PANEL_RATIO = 0.25        -- Legacy: panel ratio (unused with fixed canva
 -- =============================================================================
 
 Config.WORLD_WIDTH = 2800     -- Total scrollable world width (fits zoom 0.5 + margin)
-Config.WORLD_HEIGHT = 1600    -- Total scrollable world height (fits zoom 0.5 + margin)
+Config.WORLD_HEIGHT = 1800    -- Total scrollable world height (fits grid + void/exit zones + margin)
 
 -- =============================================================================
 -- CAMERA (drag-to-pan with zoom)
@@ -52,8 +52,8 @@ Config.CAMERA = {
 -- =============================================================================
 
 Config.CELL_SIZE = 64          -- Must be multiple of 16 for clean sprite scaling (64/16 = 4x)
-Config.GRID_COLS = 14          -- Double columns (was 7 at 64px)
-Config.GRID_ROWS = 20          -- Double rows (was 10 at 64px)
+Config.GRID_COLS = 13          -- Odd number for true center column (center = column 7)
+Config.GRID_ROWS = 19          -- Odd number for true center row (center = row 10)
 Config.BASE_ROWS = 1           -- Bottom row is base zone
 Config.VOID_HEIGHT = 2         -- Void height in cell units (above grid) - more room for portal
 Config.VOID_BUFFER = 0.5       -- Buffer below void where creeps move before entering grid (in cell units)

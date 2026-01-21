@@ -67,10 +67,15 @@ function Camera.init(worldWidth, worldHeight, viewWidth, viewHeight)
     -- Load config
     local cfg = Config.CAMERA
     if cfg then
-        state.minZoom = cfg.minZoom or 0.5
-        state.maxZoom = cfg.maxZoom or 1.5
+        -- Normalize zoom to base resolution (1280x720)
+        -- This ensures the same visible world area regardless of screen size
+        local baseWidth = Config.CANVAS_WIDTH or 1280
+        local zoomScale = viewWidth / baseWidth
+
+        state.minZoom = (cfg.minZoom or 0.5) * zoomScale
+        state.maxZoom = (cfg.maxZoom or 1.5) * zoomScale
         state.zoomSmoothing = cfg.zoomSmoothing or 8.0
-        state.zoom = cfg.defaultZoom or 1.0
+        state.zoom = (cfg.defaultZoom or 1.0) * zoomScale
         state.targetZoom = state.zoom
     end
 

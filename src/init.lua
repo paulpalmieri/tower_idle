@@ -38,7 +38,7 @@ local Blackhole = require("src.entities.blackhole")
 local LightningProjectile = require("src.entities.lightning_projectile")
 
 -- UI
-local Panel = require("src.ui.panel")
+local HUD = require("src.ui.hud")
 local Tooltip = require("src.ui.tooltip")
 local Cursor = require("src.ui.cursor")
 local Settings = require("src.ui.settings")
@@ -130,8 +130,8 @@ function Game.load()
     local exitX, exitY = Grid.getExitPortalCenter()
     state.exitPortal = ExitPortal(exitX, exitY)
 
-    -- Initialize UI (panel is now an overlay on the right side of the canvas)
-    Panel.init(gameWidth, Settings.getPanelWidth(), gameHeight)
+    -- Initialize UI (minimalistic HUD with bottom bar and top-right info)
+    HUD.init(gameWidth, gameHeight)
 
     -- Initialize custom cursor
     Cursor.init()
@@ -301,8 +301,8 @@ function Game.setupEvents()
         Camera.init(worldW, worldH, data.gameWidth, data.gameHeight)
         Camera.centerOn(camX, camY)  -- Restore position (will be clamped to valid bounds)
 
-        -- Reinitialize UI panel (overlay on right side of canvas)
-        Panel.init(data.gameWidth, data.panelWidth, data.gameHeight)
+        -- Reinitialize UI HUD
+        HUD.init(data.gameWidth, data.gameHeight)
 
         -- Recreate canvases for background and post-processing
         Background.regenerate(data.gameWidth, data.gameHeight)
@@ -563,7 +563,7 @@ function Game.update(dt)
     end
 
     -- Handle auto-clicker
-    local autoClickInterval = Panel.getAutoClickInterval()
+    local autoClickInterval = HUD.getAutoClickInterval()
     if autoClickInterval then
         state.autoClickTimer = state.autoClickTimer + dt
         if state.autoClickTimer >= autoClickInterval then
@@ -740,21 +740,21 @@ function Game.update(dt)
     -- Update floating numbers (uses real dt for smooth animations)
     FloatingNumbers.update(math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME))
 
-    -- Update UI (Panel uses game/screen coordinates, not world)
-    Panel.update(gameMx, gameMy)
+    -- Update UI (HUD uses game/screen coordinates, not world)
+    HUD.update(gameMx, gameMy)
 
     -- Track hovered tower (only when not placing a tower)
     -- Tower positions are in world coordinates, so use mx, my
-    local towerSelectedForPlacement = Panel.getSelectedTower() ~= nil
+    local towerSelectedForPlacement = HUD.getSelectedTower() ~= nil
 
     -- Clear previous hover state
     if state.hoveredTower then
         state.hoveredTower.isHovered = false
     end
 
-    -- Check if mouse is in play area (not over panel overlay)
-    local panelX = Settings.getPanelX()
-    if not towerSelectedForPlacement and gameMx < panelX then
+    -- Check if mouse is in play area (not over HUD elements)
+    local isOverHUD = HUD.isPointInHUD(gameMx, gameMy)
+    if not towerSelectedForPlacement and not isOverHUD then
         state.hoveredTower = _findTowerAt(mx, my)
     else
         state.hoveredTower = nil
@@ -768,8 +768,8 @@ function Game.update(dt)
     -- Update cursor based on hover state
     local isClickable = false
 
-    -- Check if hovering over a panel button
-    if Panel.isHoveringButton() then
+    -- Check if hovering over a HUD button
+    if HUD.isHoveringButton() then
         isClickable = true
     -- Check if hovering over tooltip button (uses game coords for tooltip position)
     elseif Tooltip.isHoveringButton(gameMx, gameMy) then
@@ -795,7 +795,7 @@ function Game.update(dt)
     elseif isClickable then
         -- Hovering over clickable element
         Cursor.setCursor(Cursor.POINTER)
-    elseif gameMx < panelX and not towerSelectedForPlacement then
+    elseif not isOverHUD and not towerSelectedForPlacement then
         -- In play area with no tower selected - ready to drag
         Cursor.setCursor(Cursor.GRAB)
     else
@@ -843,9 +843,9 @@ function Game.draw()
     local mx, my = Camera.screenToWorld(gameMx, gameMy)
 
     -- Determine if we should show grid overlay (only when a tower is selected for placement)
-    local towerSelectedForPlacement = Panel.getSelectedTower() ~= nil
-    local panelXDraw = Settings.getPanelX()
-    local showGridOverlay = towerSelectedForPlacement and gameMx < panelXDraw
+    local towerSelectedForPlacement = HUD.getSelectedTower() ~= nil
+    local isOverHUDDraw = HUD.isPointInHUD(gameMx, gameMy)
+    local showGridOverlay = towerSelectedForPlacement and not isOverHUDDraw
 
     -- Draw game world (grid overlay only when placing towers)
     Grid.draw(showGridOverlay)
@@ -975,10 +975,10 @@ function Game.draw()
     FloatingNumbers.draw()
 
     -- Draw tower placement preview (only if tower selected for placement and no placed tower selected)
-    -- Check gameMx for play area bounds (before panel overlay), but use mx (world coords) for actual positioning
-    if towerSelectedForPlacement and gameMx < panelXDraw and not state.selectedTower then
-        local canAfford = Economy.canAfford(Panel.getSelectedTowerCost())
-        local towerType = Panel.getSelectedTower()
+    -- Check if mouse is not over HUD, but use mx (world coords) for actual positioning
+    if towerSelectedForPlacement and not isOverHUDDraw and not state.selectedTower then
+        local canAfford = Economy.canAfford(HUD.getSelectedTowerCost())
+        local towerType = HUD.getSelectedTower()
         Grid.drawHover(mx, my, canAfford, towerType)
     end
 
@@ -1019,11 +1019,10 @@ function Game.draw()
     -- Draw vignette overlay (atmospheric darkening at edges)
     Atmosphere.drawVignette()
 
-    -- Draw UI (panel now contains all stats, void info, towers, upgrades)
-    Profiler.start("panel_draw")
-    Panel.draw(Economy, state.void, Waves, Game.getSpeedLabel())
-    Profiler.stop("panel_draw")
-    -- HUD is no longer needed - stats are in panel
+    -- Draw UI (minimalistic HUD with bottom bar and top-right info)
+    Profiler.start("hud_draw")
+    HUD.draw(Economy, state.void, Waves, Game.getSpeedLabel())
+    Profiler.stop("hud_draw")
 
     -- Draw tooltip on top
     Tooltip.draw(Economy)
@@ -1171,7 +1170,7 @@ end
 
 -- Attempt to place a tower at grid position
 local function _tryPlaceTower(gridX, gridY)
-    local towerType = Panel.getSelectedTower()
+    local towerType = HUD.getSelectedTower()
     local cost = Config.TOWERS[towerType].cost
 
     if Economy.canAfford(cost) and Pathfinding.canPlaceTowerAt(Grid, gridX, gridY) then
@@ -1278,17 +1277,16 @@ function Game.mousepressed(screenX, screenY, button)
         return
     end
 
-    -- Priority 2: Panel clicks (deselect any selected tower) - panel uses game coords
-    local panelXClick = Settings.getPanelX()
-    if gameX >= panelXClick then
+    -- Priority 2: HUD clicks (deselect any selected tower) - HUD uses game coords
+    if HUD.isPointInHUD(gameX, gameY) then
         _selectTower(nil)
-        local result = Panel.handleClick(gameX, gameY, Economy)
+        local result = HUD.handleClick(gameX, gameY, Economy)
         if result and result.action == "buy_upgrade" then
             if Economy.spendGold(result.cost) then
-                Panel.purchaseUpgrade(result.type)
+                HUD.purchaseUpgrade(result.type)
                 EventBus.emit("upgrade_purchased", {
                     type = result.type,
-                    level = Panel.getUpgradeLevel(result.type),
+                    level = HUD.getUpgradeLevel(result.type),
                     cost = result.cost,
                 })
             end
@@ -1323,7 +1321,7 @@ function Game.mousepressed(screenX, screenY, button)
 
     -- Priority 5: Place tower (only if one is selected) and start drag
     -- Grid uses world coordinates
-    local towerType = Panel.getSelectedTower()
+    local towerType = HUD.getSelectedTower()
     if towerType then
         local gridX, gridY = Grid.screenToGrid(worldX, worldY)
         if _tryPlaceTower(gridX, gridY) then
@@ -1331,8 +1329,8 @@ function Game.mousepressed(screenX, screenY, button)
             state.lastPlacedCell = { gridX = gridX, gridY = gridY }
         end
     else
-        -- No tower selected for placement - start camera drag on empty play area (not over panel)
-        if gameX < panelXClick then
+        -- No tower selected for placement - start camera drag on empty play area (not over HUD)
+        if not HUD.isPointInHUD(gameX, gameY) then
             Camera.startDrag(gameX, gameY)
         end
     end
@@ -1351,9 +1349,8 @@ function Game.mousemoved(screenX, screenY, dx, dy)
 
     -- Drag-to-place: continue placing towers while dragging
     if state.isDragging and love.mouse.isDown(1) then
-        -- Stop drag if moved to panel area (use game coords for UI check)
-        local panelXDrag = Settings.getPanelX()
-        if gameX >= panelXDrag then
+        -- Stop drag if moved to HUD area (use game coords for UI check)
+        if HUD.isPointInHUD(gameX, gameY) then
             state.isDragging = false
             state.lastPlacedCell = nil
             return
@@ -1414,12 +1411,11 @@ function Game.wheelmoved(x, y)
         return
     end
 
-    -- Handle battlefield zoom (only when mouse is in play area, not over panel)
+    -- Handle battlefield zoom (only when mouse is in play area, not over HUD)
     local screenMx, screenMy = love.mouse.getPosition()
     local gameMx, gameMy = Settings.screenToGame(screenMx, screenMy)
-    local panelXWheel = Settings.getPanelX()
 
-    if gameMx < panelXWheel then
+    if not HUD.isPointInHUD(gameMx, gameMy) then
         local zoomDelta = y * Config.CAMERA.zoomSpeed
         Camera.adjustZoom(zoomDelta)
     end
@@ -1488,19 +1484,19 @@ function Game.keypressed(key)
         ["5"] = "void_star",
     }
     if towerKeys[key] then
-        Panel.selectTower(towerKeys[key])
+        HUD.selectTower(towerKeys[key])
         return
     end
 
     -- Upgrade hotkeys
     if key == "q" then
-        local cost = Panel.getUpgradeCost("autoClicker")
+        local cost = HUD.getUpgradeCost("autoClicker")
         if cost > 0 and Economy.canAfford(cost) then
             if Economy.spendGold(cost) then
-                Panel.purchaseUpgrade("autoClicker")
+                HUD.purchaseUpgrade("autoClicker")
                 EventBus.emit("upgrade_purchased", {
                     type = "autoClicker",
-                    level = Panel.getUpgradeLevel("autoClicker"),
+                    level = HUD.getUpgradeLevel("autoClicker"),
                     cost = cost,
                 })
             end
@@ -1537,6 +1533,13 @@ function Game.keypressed(key)
         return
     end
 
+    -- UI style cycle
+    if key == "u" then
+        local newStyle = HUD.cycleStyle()
+        print("UI style: " .. newStyle)
+        return
+    end
+
     -- Debug overlay toggle
     if key == "d" then
         state.showDebug = not state.showDebug
@@ -1562,8 +1565,8 @@ function Game.keypressed(key)
     -- Escape: Cancel tower placement, deselect tower, or show pause menu
     if key == "escape" then
         -- First, cancel tower placement selection
-        if Panel.getSelectedTower() then
-            Panel.selectTower(nil)
+        if HUD.getSelectedTower() then
+            HUD.selectTower(nil)
         -- Then, deselect placed tower
         elseif state.selectedTower then
             _selectTower(nil)
@@ -1630,8 +1633,8 @@ function Game.restart()
     local exitX, exitY = Grid.getExitPortalCenter()
     state.exitPortal = ExitPortal(exitX, exitY)
 
-    -- Reset UI (panel is overlay on right side of canvas)
-    Panel.init(gameWidth, Settings.getPanelWidth(), gameHeight)
+    -- Reset UI (minimalistic HUD)
+    HUD.init(gameWidth, gameHeight)
     Tooltip.hide()
 end
 

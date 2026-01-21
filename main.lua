@@ -4,67 +4,54 @@
 -- This file is intentionally minimal.
 -- All game logic lives in src/
 
--- Check for showcase mode via command line arguments
-local showcaseMode = false
-for _, arg in ipairs(arg or {}) do
-    if arg == "--turret-concepts" then
-        showcaseMode = true
-        break
-    end
-end
-
--- Load appropriate module based on mode
-local ActiveModule
-if showcaseMode then
-    ActiveModule = require("src.showcase.turret_showcase")
-else
-    ActiveModule = require("src.init")
-end
+local Game = require("src.init")
 
 function love.load()
-    ActiveModule.load()
+    -- Pixel-perfect rendering (no blur/smoothing)
+    love.graphics.setDefaultFilter("nearest", "nearest")
+    Game.load()
 end
 
 function love.update(dt)
-    ActiveModule.update(dt)
+    Game.update(dt)
 end
 
 function love.draw()
-    ActiveModule.draw()
+    Game.draw()
 end
 
 function love.mousepressed(x, y, button)
-    if ActiveModule.mousepressed then
-        ActiveModule.mousepressed(x, y, button)
+    if Game.mousepressed then
+        Game.mousepressed(x, y, button)
     end
 end
 
 function love.mousemoved(x, y, dx, dy)
-    if ActiveModule.mousemoved then
-        ActiveModule.mousemoved(x, y, dx, dy)
+    if Game.mousemoved then
+        Game.mousemoved(x, y, dx, dy)
     end
 end
 
 function love.mousereleased(x, y, button)
-    if ActiveModule.mousereleased then
-        ActiveModule.mousereleased(x, y, button)
+    if Game.mousereleased then
+        Game.mousereleased(x, y, button)
     end
 end
 
 function love.keypressed(key)
-    if ActiveModule.keypressed then
-        ActiveModule.keypressed(key)
+    if Game.keypressed then
+        Game.keypressed(key)
     end
 end
 
 function love.wheelmoved(x, y)
-    if ActiveModule.wheelmoved then
-        ActiveModule.wheelmoved(x, y)
+    if Game.wheelmoved then
+        Game.wheelmoved(x, y)
     end
 end
 
 function love.quit()
-    if ActiveModule.quit then
-        ActiveModule.quit()
+    if Game.quit then
+        Game.quit()
     end
 end

@@ -44,39 +44,33 @@ function Grid.init(screenWidth, screenHeight)
     end
     state.cellSize = Config.CELL_SIZE
 
-    -- Use fixed grid dimensions from config
-    state.cols = Config.GRID_COLS or math.floor(state.playAreaWidth / state.cellSize)
-    state.rows = Config.GRID_ROWS or math.floor((screenHeight - Config.UI.hudHeight) / state.cellSize)
-
-    -- Calculate void dimensions (void is above the grid)
-    local voidHeightPixels = Config.VOID_HEIGHT * state.cellSize
-    local bufferHeightPixels = Config.VOID_BUFFER * state.cellSize
+    -- Use fixed grid dimensions from config (odd numbers for true center)
+    state.cols = Config.GRID_COLS or 13
+    state.rows = Config.GRID_ROWS or 19
 
     -- Calculate grid dimensions
-    local gridWidth = state.cols * state.cellSize
-    local gridHeight = state.rows * state.cellSize
+    local gridWidth = state.cols * state.cellSize   -- 13 * 64 = 832
+    local gridHeight = state.rows * state.cellSize  -- 19 * 64 = 1216
 
-    -- Calculate total content height (void + buffer + grid + exit portal space)
-    local exitPortalSpace = state.cellSize * 1.5  -- Space for exit portal below grid
+    -- CENTER GRID ON WORLD
+    -- World center: (2800/2, 1800/2) = (1400, 900)
+    -- Grid offset = world center - grid half size
+    local worldCenterX = worldWidth / 2
+    local worldCenterY = worldHeight / 2
 
-    -- Center grid in the WORLD (not screen) for scrollable camera
-    state.offsetX = math.floor((worldWidth - gridWidth) / 2)
+    state.offsetX = math.floor(worldCenterX - gridWidth / 2)
+    state.offsetY = math.floor(worldCenterY - gridHeight / 2)
 
-    -- Calculate total content height for vertical centering
-    local totalContentHeight = voidHeightPixels + bufferHeightPixels + gridHeight + exitPortalSpace
+    -- VOID ZONE (above grid)
+    -- Void height in pixels + buffer
+    local voidHeightPixels = Config.VOID_HEIGHT * state.cellSize  -- 2 * 64 = 128
+    local bufferHeightPixels = Config.VOID_BUFFER * state.cellSize  -- 0.5 * 64 = 32
 
-    -- Center everything vertically in world
-    local verticalPadding = math.floor((worldHeight - totalContentHeight) / 2)
-    local topPadding = math.max(verticalPadding, 20)  -- Minimum 20px from top
-
-    -- Position void at the top (with centered padding)
-    state.voidX = state.offsetX
-    state.voidY = topPadding
+    -- Position void above the grid
     state.voidWidth = gridWidth
     state.voidHeight = voidHeightPixels
-
-    -- Position grid below void + buffer
-    state.offsetY = topPadding + voidHeightPixels + bufferHeightPixels
+    state.voidX = state.offsetX
+    state.voidY = state.offsetY - bufferHeightPixels - voidHeightPixels
 
     -- Initialize cells: 0=empty, 1=tower, 3=base
     -- All rows except base are buildable - creeps enter from buffer above grid
@@ -209,13 +203,12 @@ function Grid.getSpawnZoneBounds()
     return Grid.getVoidBounds()
 end
 
--- Get the center position for the portal
+-- Get the center position for the portal (centered in void zone)
 function Grid.getPortalCenter()
-    local Config = require("src.config")
-    local x = state.voidX + state.voidWidth / 2
-    -- Center portal vertically in void area with slight top padding
-    local topPadding = Config.VOID_PORTAL.topPadding or 0
-    local y = state.voidY + topPadding + (state.voidHeight - topPadding) / 2
+    -- Center horizontally on world (same as grid center X)
+    local x = state.worldWidth / 2
+    -- Center vertically in void zone
+    local y = state.voidY + state.voidHeight / 2
     return x, y
 end
 
@@ -226,15 +219,12 @@ end
 
 -- Get the center position for the exit portal (below the grid)
 function Grid.getExitPortalCenter()
-    -- Center horizontally in the grid
-    local x = state.offsetX + (state.cols * state.cellSize) / 2
-    -- Position below the grid, with bottom padding from screen edge
+    -- Center horizontally on world (same as grid center X)
+    local x = state.worldWidth / 2
+    -- Position below the grid with a buffer
     local gridBottom = Grid.getGridBottom()
-    local _, gameHeight = Settings.getGameDimensions()
-    local bottomPadding = Config.EXIT_PORTAL.bottomPadding or 30
-    -- Center between grid bottom and (screen bottom - padding)
-    local availableSpace = gameHeight - gridBottom - bottomPadding
-    local y = gridBottom + availableSpace / 2
+    local exitBuffer = state.cellSize  -- 1 cell buffer below grid
+    local y = gridBottom + exitBuffer
     return x, y
 end
 

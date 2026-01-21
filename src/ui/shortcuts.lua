@@ -48,6 +48,7 @@ local SHORTCUTS = {
     { key = "D", description = "Toggle debug overlay" },
     { key = "L", description = "Toggle bloom" },
     { key = "G", description = "Cycle floating numbers style" },
+    { key = "U", description = "Cycle UI style" },
     { key = "~", description = "Toggle this overlay" },
 }
 
