@@ -19,8 +19,8 @@ local pi = math.pi
 -- Unique seed counter for each creep instance
 local seedCounter = 0
 
--- Perspective scale for ground elements (must match ground_effects.lua)
-local PERSPECTIVE_Y_SCALE = 0.9
+-- Perspective scale for ground elements (from centralized config)
+local PERSPECTIVE_Y_SCALE = Config.PERSPECTIVE_Y_SCALE
 
 function Creep:new(x, y, creepType, healthMultiplier, speedMultiplier)
     self.x = x

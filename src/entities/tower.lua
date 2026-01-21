@@ -539,13 +539,15 @@ function Tower:updatePiercingBoltAttack(dt, creeps)
         local dy = self.target.y - self.y
         local angle = math.atan2(dy, dx)
 
-        -- Spawn piercing bolt
+        -- Spawn bolt (pierces if keystone unlocked)
+        local canPierce = SkillTreeData.hasTowerFlag("void_bolt", "pierce")
         EventBus.emit("spawn_lightning_bolt", {
             x = self.x,
             y = self.y,
             angle = angle,
             damage = self.damage,
             sourceTower = self,
+            canPierce = canPierce,
         })
 
         self.cooldown = 1 / self.fireRate

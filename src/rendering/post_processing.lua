@@ -3,7 +3,7 @@
 
 local Config = require("src.config")
 local Bloom = require("src.rendering.bloom")
-local Settings = require("src.ui.settings")
+local Display = require("src.core.display")
 
 local PostProcessing = {}
 
@@ -15,7 +15,7 @@ local state = {
 
 function PostProcessing.init()
     -- Create scene canvas at dynamic game resolution
-    local gameWidth, gameHeight = Settings.getGameDimensions()
+    local gameWidth, gameHeight = Display.getGameDimensions()
     state.sceneCanvas = love.graphics.newCanvas(gameWidth, gameHeight)
     state.sceneCanvas:setFilter("nearest", "nearest")
 
@@ -30,7 +30,7 @@ end
 
 -- Recreate canvases when window size changes
 function PostProcessing.resize()
-    local gameWidth, gameHeight = Settings.getGameDimensions()
+    local gameWidth, gameHeight = Display.getGameDimensions()
     state.sceneCanvas = love.graphics.newCanvas(gameWidth, gameHeight)
     state.sceneCanvas:setFilter("nearest", "nearest")
 

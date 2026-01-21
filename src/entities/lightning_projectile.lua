@@ -9,7 +9,7 @@ local StatusEffects = require("src.systems.status_effects")
 
 local LightningProjectile = Object:extend()
 
-function LightningProjectile:new(x, y, angle, damage, sourceTower)
+function LightningProjectile:new(x, y, angle, damage, sourceTower, canPierce)
     self.x = x
     self.y = y
     self.angle = angle
@@ -24,6 +24,9 @@ function LightningProjectile:new(x, y, angle, damage, sourceTower)
     self.pierceDamageMultiplier = cfg.pierceDamageMultiplier
     self.slowMultiplier = cfg.slowMultiplier
     self.slowDuration = cfg.slowDuration
+
+    -- Pierce ability (from skill tree keystone, defaults to false)
+    self.canPierce = canPierce or false
 
     -- Movement
     self.vx = math.cos(angle) * self.speed
@@ -46,9 +49,9 @@ function LightningProjectile:update(dt, creeps)
     self.x = self.x + self.vx * dt
     self.y = self.y + self.vy * dt
 
-    -- Bounds check
-    if self.x < -50 or self.x > Config.SCREEN_WIDTH + 50 or
-       self.y < -50 or self.y > Config.SCREEN_HEIGHT + 50 then
+    -- Bounds check (use world dimensions, not screen)
+    if self.x < -50 or self.x > Config.WORLD_WIDTH + 50 or
+       self.y < -50 or self.y > Config.WORLD_HEIGHT + 50 then
         self.dead = true
         return
     end
@@ -84,8 +87,13 @@ function LightningProjectile:update(dt, creeps)
                     angle = self.angle,
                 })
 
-                -- Reduce damage for next pierce
-                self.currentDamage = self.currentDamage * self.pierceDamageMultiplier
+                -- If pierce is enabled, reduce damage for next hit; otherwise stop
+                if self.canPierce then
+                    self.currentDamage = self.currentDamage * self.pierceDamageMultiplier
+                else
+                    self.dead = true
+                    return
+                end
             end
         end
     end

@@ -10,7 +10,7 @@ Cursor.GRAB = "grab"
 Cursor.GRABBING = "grabbing"
 
 -- Cursor metadata (hotspot offsets and scale)
-local CURSOR_SCALE = 1.5
+local CURSOR_SCALE = 1.0
 
 local CURSOR_DATA = {
     arrow = {

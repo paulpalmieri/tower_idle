@@ -41,9 +41,9 @@ function Projectile:update(dt, creeps, groundEffects, chainLightnings)
     self.x = self.x + self.vx * dt
     self.y = self.y + self.vy * dt
 
-    -- Bounds check - mark dead if off screen
-    if self.x < -50 or self.x > Config.SCREEN_WIDTH + 50 or
-       self.y < -50 or self.y > Config.SCREEN_HEIGHT + 50 then
+    -- Bounds check - mark dead if outside world
+    if self.x < -50 or self.x > Config.WORLD_WIDTH + 50 or
+       self.y < -50 or self.y > Config.WORLD_HEIGHT + 50 then
         self.dead = true
         return
     end

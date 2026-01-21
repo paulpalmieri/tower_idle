@@ -3,9 +3,9 @@
 -- Offers Resume and Abandon Run options
 
 local Config = require("src.config")
+local Display = require("src.core.display")
 local Fonts = require("src.rendering.fonts")
 local PixelFrames = require("src.ui.pixel_frames")
-local Settings = require("src.ui.settings")
 
 local PauseMenu = {}
 
@@ -19,7 +19,7 @@ local state = {
 }
 
 local function _calculateLayout()
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     local buttonWidth = 180
     local buttonHeight = 44
     local buttonSpacing = 16
@@ -97,7 +97,7 @@ function PauseMenu.draw()
     -- Recalculate layout in case window dimensions changed
     _calculateLayout()
 
-    local screenW, screenH = Settings.getGameDimensions()
+    local screenW, screenH = Display.getGameDimensions()
 
     -- Darken background
     love.graphics.setColor(0, 0, 0, 0.85)

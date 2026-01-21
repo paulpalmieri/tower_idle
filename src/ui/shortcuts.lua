@@ -2,9 +2,9 @@
 -- Keyboard shortcuts overlay (toggle with ~)
 
 local Config = require("src.config")
+local Display = require("src.core.display")
 local Fonts = require("src.rendering.fonts")
 local PixelFrames = require("src.ui.pixel_frames")
-local Settings = require("src.ui.settings")
 
 local Shortcuts = {}
 
@@ -22,6 +22,10 @@ local state = {
 -- When adding a new keyboard shortcut, add it here!
 -- =============================================================================
 local SHORTCUTS = {
+    { category = "GLOBAL (work anywhere)" },
+    { key = "B", description = "Toggle borderless" },
+    { key = "~", description = "Toggle this overlay" },
+
     { category = "TOWERS" },
     { key = "1", description = "Select Void Orb" },
     { key = "2", description = "Select Void Ring" },
@@ -35,7 +39,6 @@ local SHORTCUTS = {
     { category = "GAME" },
     { key = "S", description = "Cycle game speed" },
     { key = "P", description = "Settings menu" },
-    { key = "B", description = "Toggle borderless" },
     { key = "ESC", description = "Cancel / Deselect / Pause" },
 
     { category = "CAMERA" },
@@ -45,11 +48,11 @@ local SHORTCUTS = {
     { key = "Mouse", description = "Peek (move to screen edges)" },
 
     { category = "DEBUG / VISUAL" },
+    { key = "F1", description = "Toggle FPS counter" },
     { key = "D", description = "Toggle debug overlay" },
     { key = "L", description = "Toggle bloom" },
     { key = "G", description = "Cycle floating numbers style" },
     { key = "U", description = "Cycle UI style" },
-    { key = "~", description = "Toggle this overlay" },
 }
 
 -- =============================================================================
@@ -58,7 +61,7 @@ local SHORTCUTS = {
 
 local function _calculateLayout()
     -- Center in window (use dynamic dimensions for widescreen support)
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     state.x = (gameW - state.width) / 2
     state.y = (gameH - state.height) / 2
 end
@@ -98,7 +101,7 @@ function Shortcuts.draw()
     local categorySpacing = 8
 
     -- Darken background (use dynamic dimensions)
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     love.graphics.setColor(0, 0, 0, 0.7)
     love.graphics.rectangle("fill", 0, 0, gameW, gameH)
 

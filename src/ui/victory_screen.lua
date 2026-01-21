@@ -3,10 +3,10 @@
 -- Two buttons: "Skill Tree" (opens skill tree scene) and "Play Again" (restart)
 
 local Config = require("src.config")
+local Display = require("src.core.display")
 local Fonts = require("src.rendering.fonts")
 local PixelFrames = require("src.ui.pixel_frames")
 local Economy = require("src.systems.economy")
-local Settings = require("src.ui.settings")
 
 local VictoryScreen = {}
 
@@ -39,7 +39,7 @@ local function _formatNumber(num)
 end
 
 local function _calculateLayout()
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     local buttonWidth = 140
     local buttonHeight = 40
     local buttonSpacing = 20
@@ -126,7 +126,7 @@ function VictoryScreen.draw()
     -- Recalculate layout in case window dimensions changed
     _calculateLayout()
 
-    local screenW, screenH = Settings.getGameDimensions()
+    local screenW, screenH = Display.getGameDimensions()
     local stats = Economy.getStats()
 
     -- Darken background

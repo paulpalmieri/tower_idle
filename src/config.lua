@@ -52,11 +52,13 @@ Config.CAMERA = {
 -- =============================================================================
 
 Config.CELL_SIZE = 64          -- Must be multiple of 16 for clean sprite scaling (64/16 = 4x)
-Config.GRID_COLS = 13          -- Odd number for true center column (center = column 7)
-Config.GRID_ROWS = 19          -- Odd number for true center row (center = row 10)
-Config.BASE_ROWS = 1           -- Bottom row is base zone
-Config.VOID_HEIGHT = 2         -- Void height in cell units (above grid) - more room for portal
-Config.VOID_BUFFER = 0.5       -- Buffer below void where creeps move before entering grid (in cell units)
+Config.GRID_COLS = 11          -- Odd number for true center column (center = column 6)
+Config.GRID_ROWS = 15          -- Odd number for true center row (center = row 8)
+Config.SPAWN_ROWS = 2          -- Top rows are spawn zone (walkable but not buildable)
+Config.BASE_ROWS = 2           -- Bottom rows are base zone (walkable but not buildable)
+Config.VOID_HEIGHT = 2         -- Void portal zone height in cell units (above grid)
+Config.VOID_BUFFER = 1.0       -- Buffer between void portal and grid top (in cell units)
+Config.EXIT_BUFFER = 1.0       -- Buffer between grid bottom and exit portal (in cell units)
 
 -- =============================================================================
 -- ECONOMY
@@ -64,11 +66,17 @@ Config.VOID_BUFFER = 0.5       -- Buffer below void where creeps move before ent
 
 Config.STARTING_GOLD = 10000
 Config.STARTING_LIVES = 20
+Config.STARTING_VOID_SHARDS = 0
+Config.STARTING_VOID_CRYSTALS = 0
 Config.MAX_OFFLINE_HOURS = 4
 
 -- =============================================================================
 -- TOWERS
 -- =============================================================================
+
+-- Tower UI order (single source of truth for HUD, skill tree, hotkeys)
+Config.TOWER_UI_ORDER = {"void_orb", "void_ring", "void_bolt", "void_eye", "void_star"}
+Config.TOWER_HOTKEYS = {"1", "2", "3", "4", "5"}
 
 Config.TOWERS = {
     void_orb = {
@@ -345,6 +353,9 @@ Config.CREEPS = {
 -- Creep path wobble (pixels of random offset when following flow field)
 Config.CREEP_WOBBLE_SCALE = 10
 
+-- Rendering perspective (isometric-style Y compression for shadows)
+Config.PERSPECTIVE_Y_SCALE = 0.9
+
 -- Visual configuration for void spawn rendering (pixel art style)
 Config.VOID_SPAWN = {
     pixelSize = 3,            -- Size of each "pixel" in the sprite
@@ -503,8 +514,8 @@ Config.VOID_PORTAL = {
 -- =============================================================================
 
 Config.WAVE_DURATION = 5       -- Seconds between waves
-Config.WAVE_BASE_ENEMIES = 3   -- Starting enemies per wave
-Config.WAVE_SCALING = 1        -- Additional enemies per wave
+Config.WAVE_BASE_ENEMIES = 4   -- Starting enemies at wave 1
+Config.WAVE_SCALING = 0.5      -- Additional enemies per wave (so wave 20 has ~14 enemies)
 Config.WAVE_SPAWN_INTERVAL = 0.5  -- Time between spawning each creep
 Config.WAVE_HEALTH_SCALING = 0.03  -- HP increase per wave (3% more HP each wave)
 
@@ -514,13 +525,8 @@ Config.WAVE_PROGRESSION = {
     bossWaves = {10, 20},
 }
 
--- Wave composition based on anger level (replaces old send ratios)
-Config.WAVE_ANGER_COMPOSITION = {
-    [0] = { voidSpawn = 2, voidSpider = 2 },
-    [1] = { voidSpawn = 4, voidSpider = 3 },
-    [2] = { voidSpawn = 5, voidSpider = 4 },
-    [3] = { voidSpawn = 6, voidSpider = 6 },
-}
+-- Note: Wave composition (enemy count) scales with wave number only.
+-- Anger/tier only boosts enemy stats (HP/speed), not wave size.
 
 -- =============================================================================
 -- VOID
@@ -573,7 +579,7 @@ Config.SKILL_TREE = {
 
     -- Background (Voronoi ground texture, same style as game)
     background = {
-        worldRadius = 1200,          -- World units from center (must cover screen + pan margin)
+        worldRadius = 1400,          -- World units from center (must be >= 1280 for minZoom 0.5)
         pixelSize = 4,
         perspectiveYRatio = 0.9,     -- Less squash than game (0.5) - tilted ground look
         cellSize = 9,
@@ -582,11 +588,13 @@ Config.SKILL_TREE = {
         -- Reuse game background colors (set in init after Config.BACKGROUND is defined)
     },
 
-    -- Camera bounds (how far player can pan from center)
-    -- Max = worldRadius - halfScreenSize (1200 - 640 = 560 for X)
+    -- Camera bounds
+    -- Note: maxPanX/Y are computed dynamically in skill_tree.lua from worldRadius
     cameraBounds = {
-        maxPanX = 450,               -- Max pan distance from center horizontally
-        maxPanY = 450,               -- Max pan distance from center vertically
+        minZoom = 0.5,               -- Minimum zoom (zoomed out) - matches main game
+        maxZoom = 1.5,               -- Maximum zoom (zoomed in) - matches main game
+        zoomSpeed = 0.1,             -- How much zoom changes per wheel tick - matches main game
+        zoomSmoothing = 10.0,        -- Interpolation speed for smooth zoom
     },
 
     -- Paths (simple pixelated lines with shy glow)
@@ -818,6 +826,55 @@ Config.COLORS = {
     progressBarBg = {0.08, 0.06, 0.10},
     bossMarker = {0.95, 0.35, 0.25},
     voidShard = {0.65, 0.45, 0.95},
+}
+
+-- =============================================================================
+-- MAIN MENU
+-- =============================================================================
+
+Config.MAIN_MENU = {
+    -- Void bullets (small voids as bullet points for menu items)
+    voidScale = 0.6,              -- Base scale for void bullet (small)
+    voidSize = 40,                -- Hitbox/layout size for void bullet
+    voidTextGap = 20,             -- Gap between void and text
+    -- Menu items column
+    columnY = 280,                -- Y position where menu column starts (centered vertically)
+    itemSpacing = 80,             -- Spacing between menu items
+    -- Hover effect
+    hoverScale = 1.15,            -- Scale multiplier on hover (void + text)
+    -- Colors
+    backgroundColor = {0.02, 0.015, 0.03, 1.0},  -- Dark purple-black background
+    textColor = {0.85, 0.75, 0.95, 1.0},         -- Purple-tinted text (matches void theme)
+    textHoverColor = {1.0, 0.9, 0.7, 1.0},       -- Bright gold on hover
+    hintColor = {0.4, 0.35, 0.5, 0.6},           -- Dim hint text at bottom
+}
+
+-- =============================================================================
+-- SETTINGS MENU (full screen, same style as main menu)
+-- =============================================================================
+
+Config.SETTINGS_MENU = {
+    -- Void bullets (small voids as bullet points for settings items)
+    voidScale = 0.5,              -- Base scale for void bullet (smaller than main menu)
+    voidSize = 30,                -- Hitbox/layout size for void bullet
+    voidTextGap = 15,             -- Gap between void and text
+    labelControlGap = 30,         -- Gap between label and control
+    controlWidth = 160,           -- Width of control area (checkbox, dropdown, slider)
+    -- Layout
+    titleY = 60,                  -- Title Y position
+    columnY = 140,                -- Y position where settings column starts
+    itemSpacing = 50,             -- Spacing between settings items
+    -- Control sizes
+    checkboxSize = 24,            -- Checkbox size
+    dropdownItemHeight = 28,      -- Height of each dropdown item
+    -- Hover effect
+    hoverScale = 1.1,             -- Scale multiplier on hover (slightly less than main menu)
+    -- Colors (same as main menu)
+    backgroundColor = {0.02, 0.015, 0.03, 1.0},  -- Dark purple-black background
+    textColor = {0.85, 0.75, 0.95, 1.0},         -- Purple-tinted text
+    textHoverColor = {1.0, 0.9, 0.7, 1.0},       -- Bright gold on hover
+    textDisabledColor = {0.4, 0.35, 0.45, 0.6},  -- Dimmed text for disabled items
+    hintColor = {0.4, 0.35, 0.5, 0.6},           -- Dim hint text at bottom
 }
 
 -- =============================================================================

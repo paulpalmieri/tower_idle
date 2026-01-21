@@ -6,16 +6,15 @@ local Config = require("src.config")
 local EventBus = require("src.core.event_bus")
 local Fonts = require("src.rendering.fonts")
 local TurretConcepts = require("src.rendering.turret_concepts")
+local Upgrades = require("src.systems.upgrades")
 
 local HUD = {}
 
--- UI Style definitions (ancient stone variants)
+-- UI Style definitions (fantasy frames)
 local UI_STYLES = {
-    { name = "weathered", label = "Weathered Stone" },
-    { name = "obsidian", label = "Obsidian" },
-    { name = "rusted", label = "Rusted Iron" },
-    { name = "bone", label = "Carved Bone" },
-    { name = "frozen", label = "Frozen Stone" },
+    { name = "stone", label = "Stone" },
+    { name = "wood", label = "Wood" },
+    { name = "void", label = "Void" },
 }
 
 local state = {
@@ -38,11 +37,6 @@ local state = {
     upgradeButton = nil,   -- Auto-clicker button
     hoverButton = nil,
 
-    -- Upgrade levels
-    upgradeLevels = {
-        autoClicker = 0,
-    },
-
     -- Cached values
     cache = {
         gold = 0,
@@ -62,9 +56,9 @@ local state = {
     styleLabelDuration = 2,  -- How long to show style label
 }
 
--- Tower types and hotkeys
-local TOWER_ORDER = {"void_orb", "void_ring", "void_bolt", "void_eye", "void_star"}
-local TOWER_KEYS = {"1", "2", "3", "4", "5"}
+-- Tower types and hotkeys (from centralized config)
+local TOWER_ORDER = Config.TOWER_UI_ORDER
+local TOWER_KEYS = Config.TOWER_HOTKEYS
 
 -- Calculate dynamic sizes based on screen dimensions
 local function _calculateSizes()
@@ -246,306 +240,315 @@ function HUD.handleClick(x, y, economy)
 end
 
 -- =============================================================================
--- PIXEL-ART UI STYLE SYSTEM
+-- FANTASY FRAME SYSTEM
 -- =============================================================================
 
--- Pixel size for UI elements (intentionally chunky)
+-- Pixel size for UI (chunky pixel art)
 local PIXEL = 2
 
--- Creative ancient stone variant palettes
-local STYLE_PALETTES = {
-    weathered = {
-        -- Classic gray stone with moss hints
-        bg = {0.14, 0.13, 0.12, 0.9},
-        bgLight = {0.20, 0.19, 0.17, 0.85},
-        border = {0.35, 0.32, 0.28, 1.0},
-        borderLight = {0.50, 0.47, 0.40, 0.9},
-        highlight = {0.60, 0.58, 0.50, 0.7},
-        shadow = {0.08, 0.07, 0.06, 0.9},
-        crack = {0.18, 0.16, 0.14, 0.8},
-        detail = {0.25, 0.30, 0.22, 0.5},  -- Moss green hint
+-- Frame thickness for different elements
+local FRAME = {
+    thin = PIXEL * 2,
+    medium = PIXEL * 3,
+    thick = PIXEL * 4,
+}
+
+-- Color palettes for each style
+local PALETTES = {
+    stone = {
+        dark = {0.18, 0.16, 0.14, 1},
+        mid = {0.32, 0.30, 0.28, 1},
+        light = {0.45, 0.42, 0.38, 1},
+        highlight = {0.55, 0.52, 0.48, 0.8},
+        bg = {0.10, 0.09, 0.08, 0.9},
+        border = {0.40, 0.38, 0.35, 1},
     },
-    obsidian = {
-        -- Black volcanic glass, sharp and reflective
-        bg = {0.05, 0.05, 0.08, 0.95},
-        bgLight = {0.10, 0.10, 0.14, 0.9},
-        border = {0.20, 0.20, 0.28, 1.0},
-        borderLight = {0.35, 0.35, 0.50, 0.9},
-        highlight = {0.70, 0.70, 0.85, 0.6},  -- Glass reflection
-        shadow = {0.02, 0.02, 0.04, 1.0},
-        crack = {0.30, 0.30, 0.45, 0.7},  -- Purple-tinted cracks
-        detail = {0.50, 0.50, 0.70, 0.4},  -- Glint
+    wood = {
+        dark = {0.25, 0.15, 0.08, 1},
+        mid = {0.45, 0.28, 0.15, 1},
+        light = {0.60, 0.40, 0.22, 1},
+        highlight = {0.70, 0.50, 0.30, 0.8},
+        bg = {0.15, 0.10, 0.06, 0.9},
+        border = {0.50, 0.32, 0.18, 1},
     },
-    rusted = {
-        -- Corroded iron with orange patina
-        bg = {0.12, 0.08, 0.06, 0.9},
-        bgLight = {0.18, 0.12, 0.08, 0.85},
-        border = {0.45, 0.28, 0.18, 1.0},
-        borderLight = {0.60, 0.40, 0.25, 0.9},
-        highlight = {0.70, 0.55, 0.40, 0.7},
-        shadow = {0.06, 0.04, 0.03, 0.9},
-        crack = {0.55, 0.30, 0.15, 0.8},  -- Rust orange
-        detail = {0.30, 0.25, 0.20, 0.6},  -- Dark iron
-    },
-    bone = {
-        -- Carved ivory/bone, warm and organic
-        bg = {0.20, 0.18, 0.15, 0.9},
-        bgLight = {0.28, 0.25, 0.20, 0.85},
-        border = {0.55, 0.50, 0.42, 1.0},
-        borderLight = {0.70, 0.65, 0.55, 0.9},
-        highlight = {0.85, 0.80, 0.70, 0.7},
-        shadow = {0.12, 0.10, 0.08, 0.9},
-        crack = {0.35, 0.30, 0.25, 0.7},  -- Aged bone
-        detail = {0.45, 0.38, 0.30, 0.5},  -- Etching
-    },
-    frozen = {
-        -- Icy stone with frost crystals
-        bg = {0.12, 0.15, 0.20, 0.9},
-        bgLight = {0.18, 0.22, 0.28, 0.85},
-        border = {0.40, 0.50, 0.60, 1.0},
-        borderLight = {0.55, 0.65, 0.75, 0.9},
-        highlight = {0.80, 0.90, 1.00, 0.7},  -- Ice glint
-        shadow = {0.06, 0.08, 0.12, 0.9},
-        crack = {0.50, 0.60, 0.75, 0.8},  -- Frost blue
-        detail = {0.70, 0.80, 0.95, 0.5},  -- Crystal
+    void = {
+        dark = {0.08, 0.04, 0.12, 1},
+        mid = {0.20, 0.12, 0.30, 1},
+        light = {0.35, 0.22, 0.50, 1},
+        highlight = {0.55, 0.40, 0.80, 0.8},
+        bg = {0.04, 0.02, 0.08, 0.9},
+        border = {0.45, 0.30, 0.65, 1},
     },
 }
 
--- Get current style name
-local function _getStyleName()
+-- Get current style
+local function _getStyle()
     return UI_STYLES[state.currentStyle].name
 end
 
 -- Get current palette
 local function _getPalette()
-    return STYLE_PALETTES[_getStyleName()]
-end
-
--- Simple hash for deterministic randomness (Lua 5.1 compatible)
-local function _hash(x, y)
-    local h = (x * 374761393 + y * 668265263) % 2147483647
-    h = ((h * 1274126177) % 2147483647)
-    return (h % 256) / 255
+    return PALETTES[_getStyle()]
 end
 
 -- =============================================================================
--- PIXEL DRAWING PRIMITIVES (simple, fast)
+-- DRAWING PRIMITIVES
 -- =============================================================================
 
--- Draw pixel-perfect border
+-- Draw a pixel rectangle (snapped to grid)
+local function _rect(x, y, w, h, color)
+    love.graphics.setColor(color[1], color[2], color[3], color[4] or 1)
+    love.graphics.rectangle("fill", math.floor(x), math.floor(y), w, h)
+end
+
+-- Draw horizontal line
+local function _hline(x, y, w, color)
+    _rect(x, y, w, PIXEL, color)
+end
+
+-- Draw vertical line
+local function _vline(x, y, h, color)
+    _rect(x, y, PIXEL, h, color)
+end
+
+-- Draw simple pixel border
 local function _drawBorder(x, y, w, h, color)
-    love.graphics.setColor(color[1], color[2], color[3], color[4] or 1)
-    love.graphics.rectangle("fill", x, y, w, PIXEL)           -- Top
-    love.graphics.rectangle("fill", x, y + h - PIXEL, w, PIXEL)  -- Bottom
-    love.graphics.rectangle("fill", x, y, PIXEL, h)           -- Left
-    love.graphics.rectangle("fill", x + w - PIXEL, y, PIXEL, h)  -- Right
-end
-
--- Draw L-bracket corners
-local function _drawCorners(x, y, w, h, color, size)
-    size = size or PIXEL * 3
-    love.graphics.setColor(color[1], color[2], color[3], color[4] or 1)
-    -- TL
-    love.graphics.rectangle("fill", x, y, size, PIXEL)
-    love.graphics.rectangle("fill", x, y, PIXEL, size)
-    -- TR
-    love.graphics.rectangle("fill", x + w - size, y, size, PIXEL)
-    love.graphics.rectangle("fill", x + w - PIXEL, y, PIXEL, size)
-    -- BL
-    love.graphics.rectangle("fill", x, y + h - PIXEL, size, PIXEL)
-    love.graphics.rectangle("fill", x, y + h - size, PIXEL, size)
-    -- BR
-    love.graphics.rectangle("fill", x + w - size, y + h - PIXEL, size, PIXEL)
-    love.graphics.rectangle("fill", x + w - PIXEL, y + h - size, PIXEL, size)
-end
-
--- Draw inner shadow (top-left dark, bottom-right light)
-local function _drawInnerBevel(x, y, w, h, shadowColor, highlightColor)
-    -- Shadow on top and left (inside)
-    love.graphics.setColor(shadowColor[1], shadowColor[2], shadowColor[3], shadowColor[4] or 1)
-    love.graphics.rectangle("fill", x + PIXEL, y + PIXEL, w - PIXEL * 2, PIXEL)
-    love.graphics.rectangle("fill", x + PIXEL, y + PIXEL, PIXEL, h - PIXEL * 2)
-    -- Highlight on bottom and right (inside)
-    love.graphics.setColor(highlightColor[1], highlightColor[2], highlightColor[3], highlightColor[4] or 1)
-    love.graphics.rectangle("fill", x + PIXEL, y + h - PIXEL * 2, w - PIXEL * 2, PIXEL)
-    love.graphics.rectangle("fill", x + w - PIXEL * 2, y + PIXEL, PIXEL, h - PIXEL * 2)
-end
-
--- Draw crack detail pixels
-local function _drawCracks(x, y, w, h, color)
-    love.graphics.setColor(color[1], color[2], color[3], color[4] or 1)
-    -- Diagonal crack from top-left
-    love.graphics.rectangle("fill", x + PIXEL * 3, y + PIXEL * 2, PIXEL, PIXEL)
-    love.graphics.rectangle("fill", x + PIXEL * 4, y + PIXEL * 3, PIXEL, PIXEL)
-    -- Crack from bottom-right
-    love.graphics.rectangle("fill", x + w - PIXEL * 4, y + h - PIXEL * 3, PIXEL, PIXEL)
-    love.graphics.rectangle("fill", x + w - PIXEL * 5, y + h - PIXEL * 4, PIXEL, PIXEL)
-end
-
--- Draw rivet dots (for rusted iron)
-local function _drawRivets(x, y, w, h, color)
-    love.graphics.setColor(color[1], color[2], color[3], color[4] or 1)
-    local spacing = math.max(PIXEL * 4, math.floor(w / 5))
-    for px = x + PIXEL * 2, x + w - PIXEL * 3, spacing do
-        love.graphics.rectangle("fill", px, y + PIXEL, PIXEL, PIXEL)
-        love.graphics.rectangle("fill", px, y + h - PIXEL * 2, PIXEL, PIXEL)
-    end
-end
-
--- Draw frost crystals (for frozen)
-local function _drawFrost(x, y, w, h, color)
-    love.graphics.setColor(color[1], color[2], color[3], color[4] or 1)
-    -- Small crystal patterns at corners
-    love.graphics.rectangle("fill", x + PIXEL * 2, y + PIXEL, PIXEL, PIXEL)
-    love.graphics.rectangle("fill", x + PIXEL, y + PIXEL * 2, PIXEL, PIXEL)
-    love.graphics.rectangle("fill", x + w - PIXEL * 3, y + PIXEL, PIXEL, PIXEL)
-    love.graphics.rectangle("fill", x + w - PIXEL * 2, y + PIXEL * 2, PIXEL, PIXEL)
-    love.graphics.rectangle("fill", x + PIXEL * 2, y + h - PIXEL * 2, PIXEL, PIXEL)
-    love.graphics.rectangle("fill", x + w - PIXEL * 3, y + h - PIXEL * 2, PIXEL, PIXEL)
-end
-
--- Draw etched lines (for bone)
-local function _drawEtching(x, y, w, h, color)
-    love.graphics.setColor(color[1], color[2], color[3], color[4] or 1)
-    -- Horizontal etched lines
-    if h > PIXEL * 6 then
-        love.graphics.rectangle("fill", x + PIXEL * 2, y + PIXEL * 2, w - PIXEL * 4, PIXEL)
-        love.graphics.rectangle("fill", x + PIXEL * 2, y + h - PIXEL * 3, w - PIXEL * 4, PIXEL)
-    end
+    x, y, w, h = math.floor(x), math.floor(y), math.floor(w), math.floor(h)
+    _hline(x, y, w, color)                    -- Top
+    _hline(x, y + h - PIXEL, w, color)        -- Bottom
+    _vline(x, y, h, color)                    -- Left
+    _vline(x + w - PIXEL, y, h, color)        -- Right
 end
 
 -- =============================================================================
--- MAIN STYLED PANEL DRAWING
+-- STONE FRAME - Heavy carved stone with beveled edges
 -- =============================================================================
 
--- Draw styled panel (background + layered border + details)
-local function _drawStyledPanel(x, y, w, h, isSelected, isHovered)
-    local styleName = _getStyleName()
-    local pal = _getPalette()
-
-    -- Snap to pixel grid
+local function _drawStoneFrame(x, y, w, h)
+    local p = PALETTES.stone
     x, y, w, h = math.floor(x), math.floor(y), math.floor(w), math.floor(h)
 
-    -- Base background
-    love.graphics.setColor(pal.bg[1], pal.bg[2], pal.bg[3], pal.bg[4])
-    love.graphics.rectangle("fill", x, y, w, h)
+    -- Outer dark edge
+    _hline(x, y, w, p.dark)
+    _hline(x, y + h - PIXEL, w, p.light)
+    _vline(x, y, h, p.dark)
+    _vline(x + w - PIXEL, y, h, p.light)
 
-    -- Border color (selection state)
-    local borderColor = pal.border
+    -- Middle layer
+    _hline(x + PIXEL, y + PIXEL, w - PIXEL * 2, p.mid)
+    _hline(x + PIXEL, y + h - PIXEL * 2, w - PIXEL * 2, p.mid)
+    _vline(x + PIXEL, y + PIXEL, h - PIXEL * 2, p.mid)
+    _vline(x + w - PIXEL * 2, y + PIXEL, h - PIXEL * 2, p.mid)
+
+    -- Inner bevel (light top-left, dark bottom-right for carved-in look)
+    _hline(x + PIXEL * 2, y + PIXEL * 2, w - PIXEL * 4, p.dark)
+    _vline(x + PIXEL * 2, y + PIXEL * 2, h - PIXEL * 4, p.dark)
+    _hline(x + PIXEL * 2, y + h - PIXEL * 3, w - PIXEL * 4, p.highlight)
+    _vline(x + w - PIXEL * 3, y + PIXEL * 2, h - PIXEL * 4, p.highlight)
+
+    -- Background
+    _rect(x + PIXEL * 3, y + PIXEL * 3, w - PIXEL * 6, h - PIXEL * 6, p.bg)
+end
+
+-- Stone orb socket - circular stone holder
+local function _drawStoneOrbFrame(cx, cy, radius)
+    local p = PALETTES.stone
+    local r = radius + FRAME.thick
+
+    -- Draw chunky square socket around orb
+    local x, y = cx - r, cy - r
+    local size = r * 2
+
+    -- Outer stone block
+    _rect(x, y, size, FRAME.medium, p.dark)  -- Top
+    _rect(x, y + size - FRAME.medium, size, FRAME.medium, p.light)  -- Bottom
+    _rect(x, y, FRAME.medium, size, p.dark)  -- Left
+    _rect(x + size - FRAME.medium, y, FRAME.medium, size, p.light)  -- Right
+
+    -- Corner blocks (thicker)
+    _rect(x, y, FRAME.thick, FRAME.thick, p.mid)
+    _rect(x + size - FRAME.thick, y, FRAME.thick, FRAME.thick, p.mid)
+    _rect(x, y + size - FRAME.thick, FRAME.thick, FRAME.thick, p.mid)
+    _rect(x + size - FRAME.thick, y + size - FRAME.thick, FRAME.thick, FRAME.thick, p.mid)
+
+    -- Inner carved edge
+    local inner = FRAME.medium
+    _hline(x + inner, y + inner, size - inner * 2, p.highlight)
+    _vline(x + inner, y + inner, size - inner * 2, p.highlight)
+end
+
+-- =============================================================================
+-- WOOD FRAME - Planks with visible grain and nails
+-- =============================================================================
+
+local function _drawWoodFrame(x, y, w, h)
+    local p = PALETTES.wood
+    x, y, w, h = math.floor(x), math.floor(y), math.floor(w), math.floor(h)
+
+    -- Background
+    _rect(x, y, w, h, p.bg)
+
+    -- Horizontal planks (top and bottom)
+    _rect(x, y, w, FRAME.medium, p.mid)
+    _rect(x, y + h - FRAME.medium, w, FRAME.medium, p.mid)
+
+    -- Wood grain on planks (horizontal lines)
+    _hline(x + PIXEL * 2, y + PIXEL, w - PIXEL * 4, p.dark)
+    _hline(x + PIXEL * 2, y + h - PIXEL * 2, w - PIXEL * 4, p.dark)
+
+    -- Vertical posts (left and right)
+    _rect(x, y, FRAME.medium, h, p.mid)
+    _rect(x + w - FRAME.medium, y, FRAME.medium, h, p.mid)
+
+    -- Wood grain on posts (vertical lines)
+    _vline(x + PIXEL, y + PIXEL * 2, h - PIXEL * 4, p.dark)
+    _vline(x + w - PIXEL * 2, y + PIXEL * 2, h - PIXEL * 4, p.dark)
+
+    -- Nail heads at corners
+    _rect(x + PIXEL, y + PIXEL, PIXEL, PIXEL, p.light)
+    _rect(x + w - PIXEL * 2, y + PIXEL, PIXEL, PIXEL, p.light)
+    _rect(x + PIXEL, y + h - PIXEL * 2, PIXEL, PIXEL, p.light)
+    _rect(x + w - PIXEL * 2, y + h - PIXEL * 2, PIXEL, PIXEL, p.light)
+
+    -- Highlight on top edges
+    _hline(x, y, w, p.light)
+    _vline(x, y, h, p.light)
+end
+
+-- Wood orb bracket - wooden holder with visible supports
+local function _drawWoodOrbFrame(cx, cy, radius)
+    local p = PALETTES.wood
+    local r = radius + PIXEL * 2
+
+    -- Four wooden brackets around the orb
+    local bw = FRAME.medium  -- bracket width
+    local bl = FRAME.thick + PIXEL * 2  -- bracket length
+
+    -- Top bracket
+    _rect(cx - bw/2, cy - r - bl, bw, bl, p.mid)
+    _hline(cx - bw/2, cy - r - bl, bw, p.light)
+    _vline(cx - bw/2, cy - r - bl, bl, p.light)
+
+    -- Bottom bracket
+    _rect(cx - bw/2, cy + r, bw, bl, p.mid)
+    _hline(cx - bw/2, cy + r + bl - PIXEL, bw, p.dark)
+
+    -- Left bracket
+    _rect(cx - r - bl, cy - bw/2, bl, bw, p.mid)
+    _vline(cx - r - bl, cy - bw/2, bw, p.light)
+
+    -- Right bracket
+    _rect(cx + r, cy - bw/2, bl, bw, p.mid)
+    _vline(cx + r + bl - PIXEL, cy - bw/2, bw, p.dark)
+
+    -- Wood grain details
+    _vline(cx - PIXEL, cy - r - bl + PIXEL, bl - PIXEL * 2, p.dark)
+    _vline(cx - PIXEL, cy + r + PIXEL, bl - PIXEL * 2, p.dark)
+end
+
+-- =============================================================================
+-- VOID FRAME - Ethereal with floating particles
+-- =============================================================================
+
+local function _drawVoidFrame(x, y, w, h)
+    local p = PALETTES.void
+    x, y, w, h = math.floor(x), math.floor(y), math.floor(w), math.floor(h)
+    local time = state.time
+
+    -- Background (darker)
+    _rect(x, y, w, h, p.bg)
+
+    -- Outer glow/edge (pulsing)
+    local pulse = 0.7 + math.sin(time * 2) * 0.3
+    local glowColor = {p.light[1], p.light[2], p.light[3], pulse * 0.6}
+
+    _hline(x, y, w, glowColor)
+    _hline(x, y + h - PIXEL, w, glowColor)
+    _vline(x, y, h, glowColor)
+    _vline(x + w - PIXEL, y, h, glowColor)
+
+    -- Inner border
+    _hline(x + PIXEL, y + PIXEL, w - PIXEL * 2, p.mid)
+    _hline(x + PIXEL, y + h - PIXEL * 2, w - PIXEL * 2, p.mid)
+    _vline(x + PIXEL, y + PIXEL, h - PIXEL * 2, p.mid)
+    _vline(x + w - PIXEL * 2, y + PIXEL, h - PIXEL * 2, p.mid)
+
+    -- Floating particles (4 corners, animated)
+    local particleColor = {p.highlight[1], p.highlight[2], p.highlight[3], pulse}
+    local offset = math.sin(time * 3) * PIXEL
+
+    _rect(x + PIXEL * 2 + offset, y + PIXEL * 2, PIXEL, PIXEL, particleColor)
+    _rect(x + w - PIXEL * 3 - offset, y + PIXEL * 2, PIXEL, PIXEL, particleColor)
+    _rect(x + PIXEL * 2 - offset, y + h - PIXEL * 3, PIXEL, PIXEL, particleColor)
+    _rect(x + w - PIXEL * 3 + offset, y + h - PIXEL * 3, PIXEL, PIXEL, particleColor)
+end
+
+-- Void orb portal - ethereal ring with particles
+local function _drawVoidOrbFrame(cx, cy, radius)
+    local p = PALETTES.void
+    local time = state.time
+    local r = radius + PIXEL * 3
+
+    -- Pulsing outer ring (drawn as 8 segments)
+    local pulse = 0.6 + math.sin(time * 2) * 0.4
+    local segments = 8
+    for i = 0, segments - 1 do
+        local angle = (i / segments) * math.pi * 2 + time * 0.5
+        local px = cx + math.cos(angle) * r
+        local py = cy + math.sin(angle) * r
+        local alpha = pulse * (0.5 + math.sin(time * 3 + i) * 0.5)
+        _rect(px - PIXEL/2, py - PIXEL/2, PIXEL, PIXEL, {p.light[1], p.light[2], p.light[3], alpha})
+    end
+
+    -- Inner ring (static)
+    local innerR = radius + PIXEL
+    for i = 0, segments - 1 do
+        local angle = (i / segments) * math.pi * 2
+        local px = cx + math.cos(angle) * innerR
+        local py = cy + math.sin(angle) * innerR
+        _rect(px - PIXEL/2, py - PIXEL/2, PIXEL, PIXEL, p.mid)
+    end
+
+    -- Floating particles around orb
+    for i = 1, 3 do
+        local angle = time * (0.5 + i * 0.3) + i * 2
+        local dist = r + PIXEL * 2 + math.sin(time * 2 + i) * PIXEL
+        local px = cx + math.cos(angle) * dist
+        local py = cy + math.sin(angle) * dist
+        _rect(px - PIXEL/2, py - PIXEL/2, PIXEL, PIXEL, {p.highlight[1], p.highlight[2], p.highlight[3], 0.7})
+    end
+end
+
+-- =============================================================================
+-- UNIFIED DRAWING FUNCTIONS
+-- =============================================================================
+
+-- Draw panel frame (simplified - no decorations)
+local function _drawStyledPanel(x, y, w, h, isSelected, isHovered)
+    -- Selection highlight only
     if isSelected then
-        borderColor = {Config.COLORS.gold[1], Config.COLORS.gold[2], Config.COLORS.gold[3], 1}
-    elseif isHovered then
-        borderColor = pal.borderLight
+        local gold = Config.COLORS.gold
+        love.graphics.setColor(gold)
+        love.graphics.setLineWidth(1)
+        love.graphics.rectangle("line", x, y, w, h)
     end
+end
 
-    -- Style-specific layering
-    if styleName == "weathered" then
-        -- Layered stone: outer border, inner shadow, cracks
-        _drawBorder(x, y, w, h, borderColor)
-        _drawInnerBevel(x, y, w, h, pal.shadow, pal.highlight)
-        _drawCracks(x, y, w, h, pal.crack)
-        -- Moss hint pixel
-        love.graphics.setColor(pal.detail[1], pal.detail[2], pal.detail[3], pal.detail[4])
-        love.graphics.rectangle("fill", x + PIXEL, y + h - PIXEL * 2, PIXEL, PIXEL)
-
-    elseif styleName == "obsidian" then
-        -- Sharp glass: double border, bright highlight corner
-        _drawBorder(x, y, w, h, pal.shadow)
-        _drawBorder(x + PIXEL, y + PIXEL, w - PIXEL * 2, h - PIXEL * 2, borderColor)
-        _drawCorners(x, y, w, h, pal.highlight, PIXEL * 2)
-        -- Glass reflection
-        love.graphics.setColor(pal.detail[1], pal.detail[2], pal.detail[3], pal.detail[4])
-        love.graphics.rectangle("fill", x + PIXEL * 2, y + PIXEL * 2, PIXEL * 2, PIXEL)
-
-    elseif styleName == "rusted" then
-        -- Metal: border, rivets, rust patches
-        _drawBorder(x, y, w, h, borderColor)
-        _drawInnerBevel(x, y, w, h, pal.shadow, pal.highlight)
-        _drawRivets(x, y, w, h, pal.detail)
-        -- Rust spot
-        love.graphics.setColor(pal.crack[1], pal.crack[2], pal.crack[3], pal.crack[4])
-        love.graphics.rectangle("fill", x + w - PIXEL * 3, y + PIXEL * 3, PIXEL, PIXEL)
-        love.graphics.rectangle("fill", x + PIXEL * 2, y + h - PIXEL * 4, PIXEL * 2, PIXEL)
-
-    elseif styleName == "bone" then
-        -- Carved bone: rounded feel, etched details
-        _drawBorder(x, y, w, h, borderColor)
-        _drawInnerBevel(x, y, w, h, pal.shadow, pal.highlight)
-        _drawEtching(x, y, w, h, pal.detail)
-        _drawCorners(x, y, w, h, pal.borderLight, PIXEL * 2)
-
-    elseif styleName == "frozen" then
-        -- Icy stone: cold colors, frost crystals
-        _drawBorder(x, y, w, h, borderColor)
-        _drawInnerBevel(x, y, w, h, pal.shadow, pal.highlight)
-        _drawFrost(x, y, w, h, pal.detail)
-        _drawCracks(x, y, w, h, pal.crack)
-    end
+-- Draw orb frame (simplified - no decorations)
+local function _drawOrbFrame(cx, cy, radius)
+    -- No frame decorations
 end
 
 -- =============================================================================
 -- ORB AND ELEMENT DRAWING
 -- =============================================================================
 
--- Draw circular decorations around an orb
-local function _drawOrbDecorations(cx, cy, radius)
-    local pal = _getPalette()
-    local outerRadius = radius + 4
-
-    -- Outer pixel ring (weathered stone border)
-    love.graphics.setColor(pal.border[1], pal.border[2], pal.border[3], 0.9)
-    local segments = 24
-    for i = 0, segments - 1 do
-        local angle = (i / segments) * math.pi * 2
-        local px = cx + math.cos(angle) * outerRadius
-        local py = cy + math.sin(angle) * outerRadius
-        -- Skip some pixels for weathered look
-        if _hash(i, math.floor(cx)) > 0.2 then
-            love.graphics.rectangle("fill", math.floor(px) - 1, math.floor(py) - 1, PIXEL, PIXEL)
-        end
-    end
-
-    -- Corner bracket decorations (at 4 cardinal positions)
-    local bracketRadius = outerRadius + 3
-    local bracketPositions = {
-        {angle = -math.pi/2},  -- Top
-        {angle = math.pi/2},   -- Bottom
-        {angle = 0},           -- Right
-        {angle = math.pi},     -- Left
-    }
-
-    love.graphics.setColor(pal.borderLight[1], pal.borderLight[2], pal.borderLight[3], 0.7)
-    for _, pos in ipairs(bracketPositions) do
-        local bx = cx + math.cos(pos.angle) * bracketRadius
-        local by = cy + math.sin(pos.angle) * bracketRadius
-        -- Draw small pixel
-        love.graphics.rectangle("fill", math.floor(bx) - 1, math.floor(by) - 1, PIXEL, PIXEL)
-        -- Extend perpendicular
-        local perpAngle = pos.angle + math.pi/2
-        local ex1 = bx + math.cos(perpAngle) * 3
-        local ey1 = by + math.sin(perpAngle) * 3
-        love.graphics.rectangle("fill", math.floor(ex1) - 1, math.floor(ey1) - 1, PIXEL, PIXEL)
-    end
-
-    -- Crack details radiating from orb
-    local crack = pal.crack or {0.2, 0.15, 0.15, 0.6}
-    love.graphics.setColor(crack[1], crack[2], crack[3], crack[4] or 0.6)
-    -- Top-left crack
-    love.graphics.rectangle("fill", math.floor(cx - radius * 0.7) - 1, math.floor(cy - radius - 6), PIXEL, PIXEL * 2)
-    -- Bottom-right crack
-    love.graphics.rectangle("fill", math.floor(cx + radius * 0.6), math.floor(cy + radius + 4), PIXEL, PIXEL * 2)
-end
-
 -- Draw a filled circle (liquid effect) from bottom up
 local function _drawFilledOrb(cx, cy, radius, fillPercent, liquidColor, glowColor)
     local time = state.time
 
-    -- Outer ring (dark border)
-    love.graphics.setColor(0.08, 0.06, 0.10, 0.95)
-    love.graphics.circle("fill", cx, cy, radius + 3)
-
-    -- Inner background (dark)
-    love.graphics.setColor(0.04, 0.03, 0.06, 0.9)
+    -- Simple dark background
+    love.graphics.setColor(0.06, 0.05, 0.08, 0.85)
     love.graphics.circle("fill", cx, cy, radius)
 
     -- Calculate fill level (from bottom)
@@ -602,14 +605,6 @@ local function _drawFilledOrb(cx, cy, radius, fillPercent, liquidColor, glowColo
     end
 
     love.graphics.setStencilTest()
-
-    -- Rim highlight
-    love.graphics.setColor(0.3, 0.25, 0.35, 0.5)
-    love.graphics.setLineWidth(2)
-    love.graphics.arc("line", "open", cx, cy, radius - 1, -math.pi * 0.8, -math.pi * 0.2)
-
-    -- Circular decorations around orb (ancient stone style)
-    _drawOrbDecorations(cx, cy, radius)
 end
 
 -- Draw the anger circle (top right)
@@ -744,13 +739,11 @@ local function _drawTowerIcon(btn, economy, isSelected, isHovered)
     local cx = btn.x + btn.size / 2
     local cy = btn.y + btn.size / 2
 
-    -- Draw styled panel (background + border + decorations)
-    _drawStyledPanel(btn.x, btn.y, btn.size, btn.size, isSelected, isHovered)
-
-    -- Dim overlay if can't afford
-    if not canAfford then
-        love.graphics.setColor(0, 0, 0, 0.4)
-        love.graphics.rectangle("fill", btn.x + PIXEL, btn.y + PIXEL, btn.size - PIXEL * 2, btn.size - PIXEL * 2)
+    -- Selection highlight only
+    if isSelected then
+        love.graphics.setColor(Config.COLORS.gold)
+        love.graphics.setLineWidth(1)
+        love.graphics.rectangle("line", btn.x, btn.y, btn.size, btn.size)
     end
 
     -- Tower sprite - use integer scale for pixel-perfect rendering
@@ -797,13 +790,11 @@ local function _drawUpgradeButton(economy)
     local cx = btn.x + btn.size / 2
     local cy = btn.y + btn.size / 2
 
-    -- Draw styled panel (background + border + decorations)
-    _drawStyledPanel(btn.x, btn.y, btn.size, btn.size, isMaxLevel, isHovered)
-
-    -- Dim overlay if can't afford
-    if not canAfford and not isMaxLevel then
-        love.graphics.setColor(0, 0, 0, 0.4)
-        love.graphics.rectangle("fill", btn.x + PIXEL, btn.y + PIXEL, btn.size - PIXEL * 2, btn.size - PIXEL * 2)
+    -- Max level highlight
+    if isMaxLevel then
+        love.graphics.setColor(Config.COLORS.emerald[1], Config.COLORS.emerald[2], Config.COLORS.emerald[3], 0.5)
+        love.graphics.setLineWidth(1)
+        love.graphics.rectangle("line", btn.x, btn.y, btn.size, btn.size)
     end
 
     -- Clock icon (pixel-style)
@@ -851,94 +842,14 @@ local function _drawGoldDisplay(economy)
     local centerX = state.screenWidth / 2
     local goldText = tostring(economy.getGold()) .. "g"
 
-    -- Calculate text width for panel sizing
-    local panelWidth = 80
-    local panelHeight = 24
-    local panelX = centerX - panelWidth / 2
-    local panelY = state.goldRowY - 4
-
-    -- Draw styled background for gold
-    _drawStyledPanel(panelX, panelY, panelWidth, panelHeight, false, false)
-
     Fonts.setFont("medium")
     love.graphics.setColor(Config.COLORS.gold)
-    love.graphics.printf(goldText, panelX, panelY + 4, panelWidth, "center")
+    love.graphics.printf(goldText, centerX - 40, state.goldRowY, 80, "center")
 end
 
--- Draw container frame for tower icons (groups them visually)
+-- Draw container frame for tower icons (simplified - no container)
 local function _drawTowerContainer()
-    if #state.towerButtons == 0 then return end
-
-    local firstBtn = state.towerButtons[1]
-    local lastBtn = state.upgradeButton or state.towerButtons[#state.towerButtons]
-
-    -- Calculate container bounds with padding
-    local padding = 6
-    local containerX = firstBtn.x - padding
-    local containerY = firstBtn.y - padding
-    local containerW = (lastBtn.x + lastBtn.size) - firstBtn.x + padding * 2
-    local containerH = firstBtn.size + padding * 2
-
-    local pal = _getPalette()
-
-    -- Draw subtle background
-    love.graphics.setColor(pal.bg[1] * 0.7, pal.bg[2] * 0.7, pal.bg[3] * 0.7, 0.5)
-    love.graphics.rectangle("fill", containerX, containerY, containerW, containerH)
-
-    -- Draw weathered border (ancient stone style)
-    love.graphics.setColor(pal.border[1], pal.border[2], pal.border[3], 0.6)
-
-    -- Top border with gaps
-    for px = 0, containerW - PIXEL, PIXEL do
-        if _hash(px, containerY) > 0.15 then
-            love.graphics.rectangle("fill", containerX + px, containerY, PIXEL, PIXEL)
-        end
-    end
-    -- Bottom border with gaps
-    for px = 0, containerW - PIXEL, PIXEL do
-        if _hash(px, containerY + containerH) > 0.15 then
-            love.graphics.rectangle("fill", containerX + px, containerY + containerH - PIXEL, PIXEL, PIXEL)
-        end
-    end
-    -- Left border with gaps
-    for py = 0, containerH - PIXEL, PIXEL do
-        if _hash(containerX, py) > 0.2 then
-            love.graphics.rectangle("fill", containerX, containerY + py, PIXEL, PIXEL)
-        end
-    end
-    -- Right border with gaps
-    for py = 0, containerH - PIXEL, PIXEL do
-        if _hash(containerX + containerW, py) > 0.2 then
-            love.graphics.rectangle("fill", containerX + containerW - PIXEL, containerY + py, PIXEL, PIXEL)
-        end
-    end
-
-    -- Corner accents (solid L-brackets)
-    love.graphics.setColor(pal.borderLight[1], pal.borderLight[2], pal.borderLight[3], 0.8)
-    local cornerSize = PIXEL * 4
-
-    -- Top-left corner
-    love.graphics.rectangle("fill", containerX, containerY, cornerSize, PIXEL)
-    love.graphics.rectangle("fill", containerX, containerY, PIXEL, cornerSize)
-
-    -- Top-right corner
-    love.graphics.rectangle("fill", containerX + containerW - cornerSize, containerY, cornerSize, PIXEL)
-    love.graphics.rectangle("fill", containerX + containerW - PIXEL, containerY, PIXEL, cornerSize)
-
-    -- Bottom-left corner
-    love.graphics.rectangle("fill", containerX, containerY + containerH - PIXEL, cornerSize, PIXEL)
-    love.graphics.rectangle("fill", containerX, containerY + containerH - cornerSize, PIXEL, cornerSize)
-
-    -- Bottom-right corner
-    love.graphics.rectangle("fill", containerX + containerW - cornerSize, containerY + containerH - PIXEL, cornerSize, PIXEL)
-    love.graphics.rectangle("fill", containerX + containerW - PIXEL, containerY + containerH - cornerSize, PIXEL, cornerSize)
-
-    -- Crack details
-    love.graphics.setColor(pal.crack[1] or 0.2, pal.crack[2] or 0.15, pal.crack[3] or 0.15, 0.5)
-    -- Crack from top-left
-    love.graphics.rectangle("fill", containerX + cornerSize + 2, containerY + PIXEL, PIXEL, PIXEL * 2)
-    -- Crack from bottom-right
-    love.graphics.rectangle("fill", containerX + containerW - cornerSize - 4, containerY + containerH - PIXEL * 3, PIXEL, PIXEL * 2)
+    -- No container drawn
 end
 
 function HUD.draw(economy, voidEntity, waves, speedLabel)
@@ -985,9 +896,6 @@ function HUD.draw(economy, voidEntity, waves, speedLabel)
 
         -- Draw styled panel for speed
         local panelWidth = radius * 2 + 20
-        local panelHeight = 22
-        _drawStyledPanel(cx - radius - 10, baseY - 4, panelWidth, panelHeight, false, false)
-
         Fonts.setFont("small")
         if speedLabel == "||" then
             love.graphics.setColor(Config.COLORS.ruby)
@@ -998,71 +906,24 @@ function HUD.draw(economy, voidEntity, waves, speedLabel)
         end
         love.graphics.printf(speedLabel, cx - radius - 10, baseY, panelWidth, "center")
     end
-
-    -- Style label (shows briefly when cycling styles)
-    if state.styleLabelTimer > 0 then
-        local alpha = math.min(1, state.styleLabelTimer / 0.5)  -- Fade out in last 0.5s
-        local styleLabel = UI_STYLES[state.currentStyle].label
-
-        -- Draw centered at top of screen
-        local labelY = 60
-        local labelWidth = 200
-        local labelHeight = 30
-        local labelX = state.screenWidth / 2 - labelWidth / 2
-
-        -- Draw styled background with alpha
-        local pal = _getPalette()
-        love.graphics.setColor(pal.bg[1], pal.bg[2], pal.bg[3], pal.bg[4] * alpha)
-        love.graphics.rectangle("fill", labelX, labelY - 5, labelWidth, labelHeight)
-
-        -- Pixel border with alpha
-        _drawBorder(labelX, labelY - 5, labelWidth, labelHeight,
-            {pal.border[1], pal.border[2], pal.border[3], alpha})
-
-        -- Text
-        Fonts.setFont("medium")
-        love.graphics.setColor(Config.COLORS.textPrimary[1], Config.COLORS.textPrimary[2], Config.COLORS.textPrimary[3], alpha)
-        love.graphics.printf("UI: " .. styleLabel, labelX, labelY, labelWidth, "center")
-    end
 end
 
--- Get cost for an upgrade at current level
+-- Get cost for an upgrade at current level (delegated to Upgrades system)
 function HUD.getUpgradeCost(upgradeType)
-    local upgradeConfig = Config.UPGRADES.panel[upgradeType]
-    if not upgradeConfig then return 0 end
-
-    local currentLevel = state.upgradeLevels[upgradeType] or 0
-    if currentLevel >= upgradeConfig.maxLevel then
-        return 0
-    end
-
-    return math.floor(upgradeConfig.baseCost * (upgradeConfig.costMultiplier ^ currentLevel))
+    return Upgrades.getCost(upgradeType)
 end
 
--- Purchase an upgrade
+-- Purchase an upgrade (delegated to Upgrades system)
 function HUD.purchaseUpgrade(upgradeType)
-    local upgradeConfig = Config.UPGRADES.panel[upgradeType]
-    if not upgradeConfig then return false end
-
-    local currentLevel = state.upgradeLevels[upgradeType] or 0
-    if currentLevel >= upgradeConfig.maxLevel then
-        return false
-    end
-
-    state.upgradeLevels[upgradeType] = currentLevel + 1
-    return true
+    return Upgrades.purchase(upgradeType)
 end
 
 function HUD.getUpgradeLevel(upgradeType)
-    return state.upgradeLevels[upgradeType] or 0
+    return Upgrades.getLevel(upgradeType)
 end
 
 function HUD.getAutoClickInterval()
-    local level = state.upgradeLevels.autoClicker or 0
-    if level == 0 then return nil end
-
-    local config = Config.UPGRADES.panel.autoClicker
-    return config.baseInterval - ((level - 1) * config.intervalReduction)
+    return Upgrades.getAutoClickInterval()
 end
 
 function HUD.getSelectedTower()

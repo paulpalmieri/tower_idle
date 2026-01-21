@@ -29,9 +29,8 @@ local state = {
 function Economy.init()
     state.gold = Config.STARTING_GOLD
     state.lives = Config.STARTING_LIVES
-    -- Testing: start with currency to test skill tree
-    state.voidShards = 1000
-    state.voidCrystals = 1
+    state.voidShards = Config.STARTING_VOID_SHARDS
+    state.voidCrystals = Config.STARTING_VOID_CRYSTALS
     state.sent = { voidSpawn = 0, voidSpider = 0 }
     -- Reset run stats
     state.stats = {

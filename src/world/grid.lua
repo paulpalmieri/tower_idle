@@ -1,8 +1,8 @@
 -- src/world/grid.lua
--- Grid state and queries
+-- Grid state and queries (data only, no rendering)
 
 local Config = require("src.config")
-local Settings = require("src.ui.settings")
+local Display = require("src.core.display")
 
 local Grid = {}
 
@@ -33,24 +33,24 @@ function Grid.init(screenWidth, screenHeight)
 
     -- Fixed canvas dimensions (1280x720 with panel overlay)
     -- Play area is full canvas width since panel overlays
-    local gameWidth, gameHeight = Settings.getGameDimensions()
+    local gameWidth, gameHeight = Display.getGameDimensions()
     if gameWidth and gameWidth > 0 then
-        state.playAreaWidth = Settings.getPlayAreaWidth()  -- Full canvas width
-        state.panelWidth = Settings.getPanelWidth()
+        state.playAreaWidth = Display.getPlayAreaWidth()  -- Full canvas width
+        state.panelWidth = Display.getPanelWidth()
     else
-        -- Fallback for initial load before Settings is ready
+        -- Fallback for initial load before Display is ready
         state.playAreaWidth = Config.CANVAS_WIDTH or 1280
         state.panelWidth = Config.PANEL_WIDTH or 320
     end
     state.cellSize = Config.CELL_SIZE
 
     -- Use fixed grid dimensions from config (odd numbers for true center)
-    state.cols = Config.GRID_COLS or 13
-    state.rows = Config.GRID_ROWS or 19
+    state.cols = Config.GRID_COLS or 11
+    state.rows = Config.GRID_ROWS or 15
 
     -- Calculate grid dimensions
-    local gridWidth = state.cols * state.cellSize   -- 13 * 64 = 832
-    local gridHeight = state.rows * state.cellSize  -- 19 * 64 = 1216
+    local gridWidth = state.cols * state.cellSize   -- 11 * 64 = 704
+    local gridHeight = state.rows * state.cellSize  -- 15 * 64 = 960
 
     -- CENTER GRID ON WORLD
     -- World center: (2800/2, 1800/2) = (1400, 900)
@@ -72,13 +72,17 @@ function Grid.init(screenWidth, screenHeight)
     state.voidX = state.offsetX
     state.voidY = state.offsetY - bufferHeightPixels - voidHeightPixels
 
-    -- Initialize cells: 0=empty, 1=tower, 3=base
-    -- All rows except base are buildable - creeps enter from buffer above grid
+    -- Initialize cells: 0=empty, 1=tower, 2=spawn zone (walkable only), 3=base
+    -- Top SPAWN_ROWS are walkable but not buildable
+    -- Bottom BASE_ROWS are the base zone
+    local spawnRows = Config.SPAWN_ROWS or 0
     state.cells = {}
     for y = 1, state.rows do
         state.cells[y] = {}
         for x = 1, state.cols do
-            if y > state.rows - Config.BASE_ROWS then
+            if y <= spawnRows then
+                state.cells[y][x] = 2  -- spawn zone (walkable, not buildable)
+            elseif y > state.rows - Config.BASE_ROWS then
                 state.cells[y][x] = 3  -- base zone
             else
                 state.cells[y][x] = 0  -- empty (buildable)
@@ -136,56 +140,7 @@ function Grid.clearCell(gridX, gridY)
     return false
 end
 
-function Grid.draw(showGridOverlay)
-    -- Draw small dots at center of each buildable cell when placing towers
-    if showGridOverlay then
-        local buildableRows = state.rows - Config.BASE_ROWS
-        local dotRadius = math.max(3, Config.CELL_SIZE / 10)  -- Scale with cell size
-        love.graphics.setColor(Config.COLORS.grid)
-
-        for y = 1, buildableRows do
-            for x = 1, state.cols do
-                -- Only show dots for empty (buildable) cells
-                if state.cells[y][x] == 0 then
-                    local centerX = state.offsetX + (x - 0.5) * state.cellSize
-                    local centerY = state.offsetY + (y - 0.5) * state.cellSize
-                    love.graphics.circle("fill", centerX, centerY, dotRadius)
-                end
-            end
-        end
-    end
-
-    -- Base zone no longer draws tiles - exit portal draws there instead
-end
-
-function Grid.drawHover(mouseX, mouseY, canAfford, towerType)
-    local gridX, gridY = Grid.screenToGrid(mouseX, mouseY)
-    if not Grid.isValidCell(gridX, gridY) then return end
-
-    local canPlace = Grid.canPlaceTower(gridX, gridY) and canAfford
-    local centerX, centerY = Grid.gridToScreen(gridX, gridY)
-
-    -- Draw highlighted dot at hovered cell (white if can place, red if cannot)
-    local dotRadius = math.max(4, Config.CELL_SIZE / 8)  -- Scale with cell size
-    if canPlace then
-        love.graphics.setColor(1, 1, 1, 0.9)
-    else
-        love.graphics.setColor(1, 0.3, 0.3, 0.7)
-    end
-    love.graphics.circle("fill", centerX, centerY, dotRadius)
-
-    -- Draw range preview for valid placements - subtle fill only, no border
-    -- Flattened ellipse for top-down perspective
-    if canPlace and towerType then
-        local towerStats = Config.TOWERS[towerType]
-        local range = towerStats and towerStats.range or 0
-        if range > 0 then
-            -- Very subtle fill ellipse (squashed vertically for perspective)
-            love.graphics.setColor(1, 1, 1, 0.05)
-            love.graphics.ellipse("fill", centerX, centerY, range, range * 0.9)
-        end
-    end
-end
+-- Rendering functions moved to src/rendering/grid_renderer.lua
 
 -- Expose state for pathfinding
 function Grid.getCells() return state.cells end
@@ -221,9 +176,9 @@ end
 function Grid.getExitPortalCenter()
     -- Center horizontally on world (same as grid center X)
     local x = state.worldWidth / 2
-    -- Position below the grid with a buffer
+    -- Position below the grid with a buffer (symmetric with void buffer)
     local gridBottom = Grid.getGridBottom()
-    local exitBuffer = state.cellSize  -- 1 cell buffer below grid
+    local exitBuffer = (Config.EXIT_BUFFER or 1.0) * state.cellSize
     local y = gridBottom + exitBuffer
     return x, y
 end
@@ -246,159 +201,6 @@ function Grid.getSpawnPosition(col, void)
     local x = state.voidX + (col - 0.5) * state.cellSize
     local y = state.voidY + state.voidHeight - state.cellSize * 0.3
     return x, y
-end
-
--- Draw debug overlay for pathfinding visualization
-function Grid.drawDebug(flowField)
-    local cellSize = state.cellSize
-    local offsetX = state.offsetX
-    local offsetY = state.offsetY
-
-    -- Draw grid cell boundaries
-    love.graphics.setLineWidth(1)
-    for y = 1, state.rows do
-        for x = 1, state.cols do
-            local screenX = offsetX + (x - 1) * cellSize
-            local screenY = offsetY + (y - 1) * cellSize
-            local cellValue = state.cells[y][x]
-
-            -- Color based on cell state
-            if cellValue == 1 then
-                love.graphics.setColor(1, 0.2, 0.2, 0.3)  -- Tower: red
-            elseif cellValue == 3 then
-                love.graphics.setColor(0.2, 1, 0.2, 0.3)  -- Base: green
-            else
-                love.graphics.setColor(0.5, 0.5, 0.5, 0.2)  -- Empty: gray
-            end
-            love.graphics.rectangle("line", screenX, screenY, cellSize, cellSize)
-        end
-    end
-
-    -- Draw row 0 (spawn buffer) cell boundaries
-    love.graphics.setColor(0.6, 0.3, 0.8, 0.3)  -- Purple for spawn buffer
-    for x = 1, state.cols do
-        local screenX = offsetX + (x - 1) * cellSize
-        local screenY = offsetY - cellSize  -- Row 0 is above the grid
-        love.graphics.rectangle("line", screenX, screenY, cellSize, cellSize)
-    end
-
-    -- Draw continuous ghost paths from each spawn column following the flow field
-    if flowField then
-        love.graphics.setLineWidth(2)
-
-        for startX = 1, state.cols do
-            -- Check if this column has a valid flow at row 0 or row 1
-            local hasPath = (flowField[0] and flowField[0][startX]) or (flowField[1] and flowField[1][startX])
-            if hasPath then
-                -- Trace path from row 0 to base
-                local points = {}
-                local x, y = startX, 0
-                local maxSteps = state.rows * state.cols  -- Prevent infinite loops
-
-                -- Start point (row 0)
-                local screenX, screenY = Grid.gridToScreen(x, y)
-                table.insert(points, screenX)
-                table.insert(points, screenY)
-
-                -- Follow flow field
-                for _ = 1, maxSteps do
-                    local flow = flowField[y] and flowField[y][x]
-                    if not flow or (flow.dx == 0 and flow.dy == 0) then
-                        break  -- Reached base or dead end
-                    end
-
-                    x = x + flow.dx
-                    y = y + flow.dy
-
-                    screenX, screenY = Grid.gridToScreen(x, y)
-                    table.insert(points, screenX)
-                    table.insert(points, screenY)
-
-                    -- Stop if we've reached or passed the base row
-                    if y >= state.rows then
-                        break
-                    end
-                end
-
-                -- Draw the path line with color based on column
-                if #points >= 4 then
-                    -- Cycle through colors for each column
-                    local hue = (startX - 1) / state.cols
-                    local r = math.abs(math.sin(hue * math.pi * 2)) * 0.5 + 0.3
-                    local g = math.abs(math.sin((hue + 0.33) * math.pi * 2)) * 0.5 + 0.3
-                    local b = math.abs(math.sin((hue + 0.66) * math.pi * 2)) * 0.5 + 0.3
-                    love.graphics.setColor(r, g, b, 0.4)
-                    love.graphics.line(points)
-                end
-            end
-        end
-    end
-
-    -- Draw flow field arrows
-    if flowField then
-        love.graphics.setColor(0.3, 0.8, 1, 0.6)  -- Cyan
-        local arrowSize = cellSize * 0.3
-
-        -- Include row 0 in arrow display
-        for y = 0, state.rows do
-            for x = 1, state.cols do
-                local flow = flowField[y] and flowField[y][x]
-                if flow and (flow.dx ~= 0 or flow.dy ~= 0) then
-                    local centerX, centerY
-                    if y == 0 then
-                        -- Row 0 is above the grid
-                        centerX = offsetX + (x - 0.5) * cellSize
-                        centerY = offsetY - cellSize + cellSize * 0.5
-                    else
-                        centerX = offsetX + (x - 0.5) * cellSize
-                        centerY = offsetY + (y - 0.5) * cellSize
-                    end
-
-                    -- Draw arrow line
-                    local endX = centerX + flow.dx * arrowSize
-                    local endY = centerY + flow.dy * arrowSize
-                    love.graphics.line(centerX, centerY, endX, endY)
-
-                    -- Draw arrowhead
-                    local angle = math.atan2(flow.dy, flow.dx)
-                    local headSize = arrowSize * 0.4
-                    love.graphics.polygon("fill",
-                        endX, endY,
-                        endX - headSize * math.cos(angle - 0.5), endY - headSize * math.sin(angle - 0.5),
-                        endX - headSize * math.cos(angle + 0.5), endY - headSize * math.sin(angle + 0.5)
-                    )
-                end
-            end
-        end
-    end
-end
-
--- Draw ghost path from spawn to base
-function Grid.drawGhostPath(path)
-    if not path or #path < 2 then return end
-
-    love.graphics.setColor(1, 1, 0.5, 0.7)  -- Yellow
-    love.graphics.setLineWidth(2)
-
-    local points = {}
-    for _, node in ipairs(path) do
-        local screenX, screenY = Grid.gridToScreen(node.x, node.y)
-        table.insert(points, screenX)
-        table.insert(points, screenY)
-    end
-
-    if #points >= 4 then
-        love.graphics.line(points)
-    end
-
-    -- Draw start and end markers
-    love.graphics.setColor(0.5, 1, 0.5, 0.8)  -- Green for start
-    local startX, startY = Grid.gridToScreen(path[1].x, path[1].y)
-    love.graphics.circle("fill", startX, startY, 6)
-
-    love.graphics.setColor(1, 0.5, 0.5, 0.8)  -- Red for end
-    local endX, endY = Grid.gridToScreen(path[#path].x, path[#path].y)
-    love.graphics.circle("fill", endX, endY, 6)
 end
 
 return Grid

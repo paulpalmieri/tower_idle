@@ -4,6 +4,7 @@
 -- Features: 5 towers in star pattern, skill nodes branching outward
 
 local Config = require("src.config")
+local Display = require("src.core.display")
 local Fonts = require("src.rendering.fonts")
 local PixelFrames = require("src.ui.pixel_frames")
 local SkillTreeData = require("src.systems.skill_tree_data")
@@ -11,14 +12,16 @@ local Economy = require("src.systems.economy")
 local TurretConcepts = require("src.rendering.turret_concepts")
 local SkillTreeBackground = require("src.rendering.skill_tree_background")
 local Creep = require("src.entities.creep")
-local Settings = require("src.ui.settings")
+local Cursor = require("src.ui.cursor")
 
 local SkillTree = {}
 
--- Camera/viewport state (pan only, no zoom)
+-- Camera/viewport state (pan and zoom)
 local camera = {
     x = 0,          -- World position (center of view)
     y = 0,
+    zoom = 1.0,     -- Current zoom level
+    targetZoom = 1.0, -- Target zoom for smooth interpolation
     -- Panning state
     isPanning = false,
     panStartX = 0,
@@ -117,6 +120,13 @@ local state = {
     voidSpawnScale = 1.0,
     -- Gravity particles (same as ExitPortal)
     gravityParticles = {},
+    -- Pre-rendered canvases for performance
+    nodesCanvas = nil,
+    pathsCanvas = nil,
+    canvasSize = 0,
+    canvasOffset = 0,
+    -- Track last hovered node to know when to redraw
+    lastHoveredNodeId = nil,
 }
 
 -- =============================================================================
@@ -138,39 +148,42 @@ local function _getColorScheme()
     return COLOR_SCHEMES[colorSchemeIndex]
 end
 
--- Convert screen coordinates to world coordinates (accounting for perspective)
+-- Convert screen coordinates to world coordinates (accounting for zoom and perspective)
 local function _screenToWorld(screenX, screenY)
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     local centerX = gameW / 2
     local centerY = gameH / 2
     local perspectiveY = _getPerspectiveYRatio()
-    local worldX = (screenX - centerX) + camera.x
+    -- Divide by zoom when converting screen offset to world offset
+    local worldX = (screenX - centerX) / camera.zoom + camera.x
     -- Reverse perspective: divide by ratio to get true world Y
-    local worldY = ((screenY - centerY) + camera.y) / perspectiveY
+    local worldY = ((screenY - centerY) / camera.zoom + camera.y) / perspectiveY
     return worldX, worldY
 end
 
--- Convert world coordinates to screen coordinates (accounting for perspective)
+-- Convert world coordinates to screen coordinates (accounting for zoom and perspective)
 local function _worldToScreen(worldX, worldY)
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     local centerX = gameW / 2
     local centerY = gameH / 2
     local perspectiveY = _getPerspectiveYRatio()
-    local screenX = (worldX - camera.x) + centerX
+    -- Multiply by zoom when converting world offset to screen offset
+    local screenX = (worldX - camera.x) * camera.zoom + centerX
     -- Apply perspective: multiply Y by ratio for squashed look
-    local screenY = (worldY * perspectiveY - camera.y) + centerY
+    local screenY = (worldY * perspectiveY - camera.y) * camera.zoom + centerY
     return screenX, screenY
 end
 
--- Apply camera transform for drawing (with perspective)
+-- Apply camera transform for drawing (with zoom and perspective)
 local function _applyCameraTransform()
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     local centerX = gameW / 2
     local centerY = gameH / 2
     local perspectiveY = _getPerspectiveYRatio()
     love.graphics.push()
     love.graphics.translate(centerX, centerY)
-    love.graphics.scale(1, perspectiveY)
+    love.graphics.scale(camera.zoom, camera.zoom)  -- Apply zoom
+    love.graphics.scale(1, perspectiveY)           -- Apply perspective
     love.graphics.translate(-camera.x, -camera.y / perspectiveY)
 end
 
@@ -281,8 +294,8 @@ local function _computeTowerPositions()
 
     state.towerPositions = {}
 
-    local towerTypes = {"void_bolt", "void_orb", "void_ring", "void_eye", "void_star"}
-    for _, towerType in ipairs(towerTypes) do
+    -- Use centralized tower order for consistency
+    for _, towerType in ipairs(Config.TOWER_UI_ORDER) do
         local angle = cfg.branchAngles[towerType]
         local x = math.cos(angle) * towerRadius
         local y = math.sin(angle) * towerRadius
@@ -467,9 +480,12 @@ function SkillTree.activate()
     state.backButtonHovered = false
     state.voidSpawnHovered = false
     state.voidSpawnScale = 1.0
+    state.lastHoveredNodeId = nil
     -- Reset camera to center
     camera.x = 0
     camera.y = 0
+    camera.zoom = 1.0
+    camera.targetZoom = 1.0
     camera.isPanning = false
     _calculateLayout()
 
@@ -480,13 +496,28 @@ function SkillTree.activate()
     -- Initialize gravity particle system (same as ExitPortal)
     _initGravityParticles()
 
-    -- Generate background (regenerate to ensure correct size)
-    SkillTreeBackground.generate()
+    -- Generate background only if not already cached
+    if not SkillTreeBackground.isGenerated() then
+        SkillTreeBackground.generate()
+    end
+
+    -- Note: canvases are initialized lazily in draw() after all helper functions are defined
 end
 
 function SkillTree.deactivate()
     state.active = false
     camera.isPanning = false
+    -- Release canvases to free memory
+    state.nodesCanvas = nil
+    state.pathsCanvas = nil
+end
+
+-- Invalidate canvases on window resize (fullscreen toggle, resolution change)
+-- Canvases will be recreated lazily on next draw
+function SkillTree.invalidateCanvases()
+    state.nodesCanvas = nil
+    state.pathsCanvas = nil
+    state.lastHoveredNodeId = nil
 end
 
 function SkillTree.show()
@@ -528,20 +559,44 @@ function SkillTree.update(mouseX, mouseY)
     -- Update gravity particles
     _updateGravityParticles(dt)
 
+    -- Smooth zoom interpolation
+    local bounds = Config.SKILL_TREE.cameraBounds
+    if bounds and camera.zoom ~= camera.targetZoom then
+        local smoothing = bounds.zoomSmoothing or 10.0
+        camera.zoom = camera.zoom + (camera.targetZoom - camera.zoom) * dt * smoothing
+        -- Snap if very close
+        if math.abs(camera.zoom - camera.targetZoom) < 0.001 then
+            camera.zoom = camera.targetZoom
+        end
+    end
+
     -- Handle panning (with left mouse drag)
     if camera.isPanning then
         local dx = mouseX - camera.panStartX
         local dy = mouseY - camera.panStartY
-        camera.x = camera.panStartCamX - dx
-        camera.y = camera.panStartCamY - dy
-
-        -- Clamp camera to bounds
-        local bounds = Config.SKILL_TREE.cameraBounds
-        if bounds then
-            camera.x = math.max(-bounds.maxPanX, math.min(bounds.maxPanX, camera.x))
-            camera.y = math.max(-bounds.maxPanY, math.min(bounds.maxPanY, camera.y))
-        end
+        -- Divide by zoom to maintain consistent pan speed at different zoom levels
+        camera.x = camera.panStartCamX - dx / camera.zoom
+        camera.y = camera.panStartCamY - dy / camera.zoom
     end
+
+    -- Clamp camera to bounds based on world radius and visible area
+    local worldRadius = Config.SKILL_TREE.background.worldRadius
+    local gameW, gameH = Display.getGameDimensions()
+    local perspectiveY = _getPerspectiveYRatio()
+
+    -- Calculate how much of the world is visible at current zoom (in camera coordinate space)
+    local halfVisibleX = (gameW / 2) / camera.zoom
+    local halfVisibleY = (gameH / 2) / camera.zoom  -- camera.y is in pre-perspective space, so don't divide
+
+    -- World radius converted to camera coordinate space for Y
+    local worldRadiusY = worldRadius * perspectiveY  -- Background Y extent in camera space
+
+    -- Max pan is limited so edge of visible area doesn't exceed world bounds
+    local maxPanX = math.max(0, worldRadius - halfVisibleX)
+    local maxPanY = math.max(0, worldRadiusY - halfVisibleY)
+
+    camera.x = math.max(-maxPanX, math.min(maxPanX, camera.x))
+    camera.y = math.max(-maxPanY, math.min(maxPanY, camera.y))
 
     -- Convert mouse to world coords for node hover detection
     local worldX, worldY = _screenToWorld(mouseX, mouseY)
@@ -578,6 +633,22 @@ function SkillTree.update(mouseX, mouseY)
     local backBtnW, backBtnH = 100, 36
     local backBtnX, backBtnY = 20, 20
     state.backButtonHovered = _pointInRect(mouseX, mouseY, backBtnX, backBtnY, backBtnW, backBtnH)
+
+    -- Refresh canvas if hover state changed
+    local currentHoveredId = state.hoveredNode and state.hoveredNode.id or nil
+    if currentHoveredId ~= state.lastHoveredNodeId and state.nodesCanvas then
+        SkillTree._renderNodesToCanvas(currentHoveredId)
+        state.lastHoveredNodeId = currentHoveredId
+    end
+
+    -- Update cursor state
+    if camera.isPanning then
+        Cursor.setCursor(Cursor.GRABBING)
+    elseif state.hoveredNode or state.voidSpawnHovered or state.backButtonHovered then
+        Cursor.setCursor(Cursor.POINTER)
+    else
+        Cursor.setCursor(Cursor.GRAB)
+    end
 end
 
 function SkillTree.handleClick(x, y, button)
@@ -597,16 +668,23 @@ function SkillTree.handleClick(x, y, button)
 
     -- Check for node click (world space)
     if state.hoveredNode then
+        local needsRefresh = false
         if button == 1 then
             -- Left click: allocate
             if SkillTreeData.canAllocate(state.hoveredNode.id) then
                 SkillTreeData.allocate(state.hoveredNode.id)
+                needsRefresh = true
             end
         elseif button == 2 then
             -- Right click: unallocate
             if SkillTreeData.canUnallocate(state.hoveredNode.id) then
                 SkillTreeData.unallocate(state.hoveredNode.id)
+                needsRefresh = true
             end
+        end
+        -- Refresh canvases after allocation changes
+        if needsRefresh then
+            SkillTree._refreshCanvases(state.hoveredNode and state.hoveredNode.id or nil)
         end
         return true
     end
@@ -631,7 +709,46 @@ function SkillTree.handleMouseReleased(x, y, button)
 end
 
 function SkillTree.handleWheel(wheelX, wheelY)
-    -- No zoom
+    if not state.active then return end
+
+    local bounds = Config.SKILL_TREE.cameraBounds
+    if not bounds then return end
+
+    -- Get mouse position for zoom-toward-mouse behavior (convert screen to game coords for fullscreen support)
+    local screenX, screenY = love.mouse.getPosition()
+    local mouseX, mouseY = Display.screenToGame(screenX, screenY)
+
+    -- Calculate world position under mouse before zoom
+    local worldX, worldY = _screenToWorld(mouseX, mouseY)
+
+    -- Adjust target zoom based on wheel delta
+    local zoomDelta = wheelY * bounds.zoomSpeed
+    camera.targetZoom = camera.targetZoom + zoomDelta
+
+    -- Clamp target zoom to bounds
+    camera.targetZoom = math.max(bounds.minZoom, math.min(bounds.maxZoom, camera.targetZoom))
+
+    -- Adjust camera position so the world point under mouse stays under cursor
+    -- After zoom, we want: worldX = (mouseX - centerX) / newZoom + camera.x
+    -- So: camera.x = worldX - (mouseX - centerX) / newZoom
+    local gameW, gameH = Display.getGameDimensions()
+    local centerX = gameW / 2
+    local centerY = gameH / 2
+    local perspectiveY = _getPerspectiveYRatio()
+
+    camera.x = worldX - (mouseX - centerX) / camera.targetZoom
+    camera.y = worldY * perspectiveY - (mouseY - centerY) / camera.targetZoom
+
+    -- Clamp camera to bounds based on world radius and visible area at target zoom
+    local worldRadius = Config.SKILL_TREE.background.worldRadius
+    local halfVisibleX = (gameW / 2) / camera.targetZoom
+    local halfVisibleY = (gameH / 2) / camera.targetZoom  -- camera.y is in pre-perspective space
+    local worldRadiusY = worldRadius * perspectiveY  -- Background Y extent in camera space
+    local maxPanX = math.max(0, worldRadius - halfVisibleX)
+    local maxPanY = math.max(0, worldRadiusY - halfVisibleY)
+
+    camera.x = math.max(-maxPanX, math.min(maxPanX, camera.x))
+    camera.y = math.max(-maxPanY, math.min(maxPanY, camera.y))
 end
 
 function SkillTree.handleKeyPressed(key)
@@ -639,6 +756,8 @@ function SkillTree.handleKeyPressed(key)
 
     if key == "n" then
         colorSchemeIndex = (colorSchemeIndex % #COLOR_SCHEMES) + 1
+        -- Refresh canvases with new color scheme
+        SkillTree._refreshCanvases(state.hoveredNode and state.hoveredNode.id or nil)
         return true
     end
     return false
@@ -651,8 +770,13 @@ end
 function SkillTree.draw()
     if not state.active then return end
 
+    -- Lazy initialize canvases on first draw (after all helper functions are defined)
+    if not state.nodesCanvas then
+        SkillTree._initializeCanvases()
+    end
+
     -- Draw dark background fallback (will be mostly covered by Voronoi texture)
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     love.graphics.setColor(0.03, 0.02, 0.05)
     love.graphics.rectangle("fill", 0, 0, gameW, gameH)
 
@@ -699,8 +823,9 @@ function SkillTree.drawTowers()
     end
     table.sort(sortedTowers, function(a, b) return a.screenY < b.screenY end)
 
-    -- Draw towers at screen coordinates (scaled 1.5x, level 1 base)
-    local towerScale = 1.5
+    -- Draw towers at screen coordinates (base scale 1.5x, affected by zoom)
+    local baseTowerScale = 1.5
+    local towerScale = baseTowerScale * camera.zoom
     for _, tower in ipairs(sortedTowers) do
         love.graphics.push()
         love.graphics.translate(tower.screenX, tower.screenY)
@@ -1078,56 +1203,6 @@ local function _drawNodeHeavySocket(pos, color, size, isHovered, isAllocated, is
     end
 end
 
-function SkillTree.drawNodes()
-    local cfg = Config.SKILL_TREE
-    local nodes = SkillTreeData.getAllNodes()
-    local pixelSize = 2
-
-    for _, node in ipairs(nodes) do
-        local pos = state.nodePositions[node.id]
-        if pos then
-            local color = _getNodeColor(node)
-            local size = _getNodeSize(node) * 1.3  -- Bigger nodes
-            local isHovered = state.hoveredNode and state.hoveredNode.id == node.id
-            local isAllocated = SkillTreeData.isAllocated(node.id)
-
-            -- Determine node state for color scheme
-            local nodeState = "locked"
-            if isAllocated then
-                nodeState = "allocated"
-            elseif SkillTreeData.isAvailable(node.id) then
-                nodeState = "available"
-            end
-
-            if styleIndex == 1 then
-                _drawNodeThinRing(pos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize)
-            elseif styleIndex == 2 then
-                _drawNodeShallowCylinder(pos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize)
-            elseif styleIndex == 3 then
-                _drawNodeStoneWell(pos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize, nodeState)
-            elseif styleIndex == 4 then
-                _drawNodeRuinedPedestal(pos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize)
-            else
-                _drawNodeHeavySocket(pos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize)
-            end
-        end
-    end
-end
-
--- Draw void spawn at center (clickable to start run)
-function SkillTree.drawVoidSpawn()
-    if not state.voidSpawn then return end
-
-    -- Draw at world origin (0, 0) with base scale of 1.8x plus hover effect
-    local baseScale = 1.8
-    local finalScale = baseScale * state.voidSpawnScale
-    love.graphics.push()
-    love.graphics.translate(0, 0)
-    love.graphics.scale(finalScale, finalScale)
-    state.voidSpawn:draw()
-    love.graphics.pop()
-end
-
 -- Draw a pixelated line between two points
 local function _drawPixelLine(x1, y1, x2, y2, pixelSize, r, g, b, a, glowR, glowG, glowB, glowA)
     local dx = x2 - x1
@@ -1166,9 +1241,29 @@ local function _drawPixelLine(x1, y1, x2, y2, pixelSize, r, g, b, a, glowR, glow
     end
 end
 
--- Draw paths as pixelated lines
-function SkillTree.drawCarvedPaths()
+-- =============================================================================
+-- CANVAS PRE-RENDERING (Performance optimization)
+-- =============================================================================
+
+-- Calculate canvas size needed for all nodes and paths
+function SkillTree._calculateCanvasSize()
+    local cfg = Config.SKILL_TREE
+    -- Use the keystone radius as the outer bounds, plus some padding for node size
+    local maxRadius = cfg.tierRadius[5] or 700
+    local padding = 100  -- Extra space for node rendering
+    local size = (maxRadius + padding) * 2
+    return math.ceil(size), maxRadius + padding
+end
+
+-- Pre-render all paths to a canvas
+function SkillTree._renderPathsToCanvas()
+    if not state.pathsCanvas then return end
+
+    local offset = state.canvasOffset
     local pixelSize = 4  -- Match background pixel size
+
+    love.graphics.setCanvas(state.pathsCanvas)
+    love.graphics.clear(0, 0, 0, 0)
 
     for _, path in ipairs(state.pathways) do
         -- Check if path is active
@@ -1179,22 +1274,135 @@ function SkillTree.drawCarvedPaths()
             isActive = SkillTreeData.isAllocated(path.fromId) and SkillTreeData.isAllocated(path.toId)
         end
 
+        -- Offset coordinates to canvas space
+        local x1, y1 = path.fromX + offset, path.fromY + offset
+        local x2, y2 = path.toX + offset, path.toY + offset
+
         if isActive then
-            -- Active: warm stone glow (matches Stone Glow palette)
-            _drawPixelLine(path.fromX, path.fromY, path.toX, path.toY, pixelSize,
-                0.5, 0.45, 0.35, 0.6,
-                nil, nil, nil, 0)
+            -- Active: bright white/gold glow
+            _drawPixelLine(x1, y1, x2, y2, pixelSize,
+                1.0, 0.95, 0.8, 0.9,
+                0.9, 0.8, 0.5, 0.2)
         else
-            -- Inactive: dark subtle line
-            _drawPixelLine(path.fromX, path.fromY, path.toX, path.toY, pixelSize,
-                0.22, 0.20, 0.18, 0.35,
+            -- Inactive: visible white/gray line
+            _drawPixelLine(x1, y1, x2, y2, pixelSize,
+                0.6, 0.58, 0.55, 0.6,
                 nil, nil, nil, 0)
         end
     end
+
+    love.graphics.setCanvas()
+end
+
+-- Pre-render all nodes to a canvas
+function SkillTree._renderNodesToCanvas(hoveredNodeId)
+    if not state.nodesCanvas then return end
+
+    local cfg = Config.SKILL_TREE
+    local nodes = SkillTreeData.getAllNodes()
+    local pixelSize = 2
+    local offset = state.canvasOffset
+
+    love.graphics.setCanvas(state.nodesCanvas)
+    love.graphics.clear(0, 0, 0, 0)
+
+    for _, node in ipairs(nodes) do
+        local pos = state.nodePositions[node.id]
+        if pos then
+            local color = _getNodeColor(node)
+            local size = _getNodeSize(node) * 1.3  -- Bigger nodes
+            local isHovered = hoveredNodeId and hoveredNodeId == node.id
+            local isAllocated = SkillTreeData.isAllocated(node.id)
+
+            -- Determine node state for color scheme
+            local nodeState = "locked"
+            if isAllocated then
+                nodeState = "allocated"
+            elseif SkillTreeData.isAvailable(node.id) then
+                nodeState = "available"
+            end
+
+            -- Create offset position for canvas space
+            local canvasPos = { x = pos.x + offset, y = pos.y + offset }
+
+            if styleIndex == 1 then
+                _drawNodeThinRing(canvasPos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize)
+            elseif styleIndex == 2 then
+                _drawNodeShallowCylinder(canvasPos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize)
+            elseif styleIndex == 3 then
+                _drawNodeStoneWell(canvasPos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize, nodeState)
+            elseif styleIndex == 4 then
+                _drawNodeRuinedPedestal(canvasPos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize)
+            else
+                _drawNodeHeavySocket(canvasPos, color, size, isHovered, isAllocated, node.isKeystone, pixelSize)
+            end
+        end
+    end
+
+    love.graphics.setCanvas()
+end
+
+-- Create canvases and perform initial render
+function SkillTree._initializeCanvases()
+    local size, offset = SkillTree._calculateCanvasSize()
+    state.canvasSize = size
+    state.canvasOffset = offset
+
+    -- Create canvases with appropriate size
+    state.nodesCanvas = love.graphics.newCanvas(size, size)
+    state.nodesCanvas:setFilter("nearest", "nearest")
+
+    state.pathsCanvas = love.graphics.newCanvas(size, size)
+    state.pathsCanvas:setFilter("nearest", "nearest")
+
+    -- Initial render
+    SkillTree._renderPathsToCanvas()
+    SkillTree._renderNodesToCanvas(nil)
+    state.lastHoveredNodeId = nil
+end
+
+-- Refresh canvases when state changes (allocation, hover)
+function SkillTree._refreshCanvases(hoveredNodeId)
+    SkillTree._renderPathsToCanvas()
+    SkillTree._renderNodesToCanvas(hoveredNodeId)
+    state.lastHoveredNodeId = hoveredNodeId
+end
+
+function SkillTree.drawNodes()
+    if not state.nodesCanvas then return end
+
+    -- Draw the pre-rendered canvas
+    local offset = state.canvasOffset
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(state.nodesCanvas, -offset, -offset)
+end
+
+-- Draw void spawn at center (clickable to start run)
+function SkillTree.drawVoidSpawn()
+    if not state.voidSpawn then return end
+
+    -- Draw at world origin (0, 0) with base scale of 1.8x plus hover effect
+    local baseScale = 1.8
+    local finalScale = baseScale * state.voidSpawnScale
+    love.graphics.push()
+    love.graphics.translate(0, 0)
+    love.graphics.scale(finalScale, finalScale)
+    state.voidSpawn:draw()
+    love.graphics.pop()
+end
+
+-- Draw paths as pixelated lines (using pre-rendered canvas)
+function SkillTree.drawCarvedPaths()
+    if not state.pathsCanvas then return end
+
+    -- Draw the pre-rendered canvas
+    local offset = state.canvasOffset
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(state.pathsCanvas, -offset, -offset)
 end
 
 function SkillTree.drawUI()
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     local shards = Economy.getVoidShards()
     local crystals = Economy.getVoidCrystals()
 
@@ -1234,7 +1442,7 @@ function SkillTree.drawUI()
     love.graphics.setColor(Config.COLORS.textSecondary)
     local scheme = _getColorScheme()
     love.graphics.printf(
-        "Click center to start | Click node: allocate | Right-click: refund | Drag: pan | N: " .. scheme.name,
+        "Click center to start | Click: allocate | Right-click: refund | Drag: pan | Scroll: zoom | N: " .. scheme.name,
         0, gameH - 28, gameW, "center"
     )
 end
@@ -1291,7 +1499,7 @@ function SkillTree.drawTooltip(node)
     local tooltipX = screenX + 20
     local tooltipY = screenY - tooltipHeight / 2
 
-    local gameW, gameH = Settings.getGameDimensions()
+    local gameW, gameH = Display.getGameDimensions()
     if tooltipX + tooltipWidth > gameW - 10 then
         tooltipX = screenX - tooltipWidth - 20
     end

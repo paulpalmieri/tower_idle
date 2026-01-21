@@ -14,8 +14,7 @@ local state = {
     spawning = false,
     spawnQueue = {},
     spawnTimer = 0,
-    angerLevel = 0,  -- Current anger level from Void (legacy)
-    currentTier = 0, -- Current tier from Void click system (0-4)
+    currentTier = 0, -- Current tier from Void (0-4), only affects enemy stats (HP/speed)
     gameWon = false, -- True when all waves completed
 }
 
@@ -25,17 +24,12 @@ function Waves.init()
     state.spawning = false
     state.spawnQueue = {}
     state.spawnTimer = 0
-    state.angerLevel = 0
     state.currentTier = 0
     state.gameWon = false
 end
 
--- Set the anger level (called when Void is clicked) - legacy
-function Waves.setAngerLevel(anger)
-    state.angerLevel = anger or 0
-end
-
 -- Set the current tier (called when Void tier changes)
+-- Tier only affects enemy stats (HP/speed), not wave composition
 function Waves.setTier(tier)
     state.currentTier = tier or 0
 end
@@ -48,7 +42,7 @@ local function _isBossWave(waveNum)
     return false
 end
 
--- Build the spawn queue based on anger level
+-- Build the spawn queue based on wave number (anger only affects stats, not composition)
 local function _buildQueue()
     local queue = {}
 
@@ -58,24 +52,20 @@ local function _buildQueue()
         return queue
     end
 
-    -- Get composition for current anger level (cap at max defined level)
-    local maxAnger = 0
-    for level, _ in pairs(Config.WAVE_ANGER_COMPOSITION) do
-        if level > maxAnger then maxAnger = level end
+    -- Calculate total enemy count based on wave number
+    local totalEnemies = Config.WAVE_BASE_ENEMIES + math.floor(state.waveNumber * Config.WAVE_SCALING)
+
+    -- Distribute enemies between types (mix of voidSpawn and voidSpider)
+    -- Later waves have more spiders (harder enemy)
+    local spiderRatio = math.min(0.5, 0.2 + (state.waveNumber * 0.015))  -- 20% at wave 1, up to 50%
+    local spiderCount = math.floor(totalEnemies * spiderRatio)
+    local spawnCount = totalEnemies - spiderCount
+
+    for _ = 1, spawnCount do
+        table.insert(queue, "voidSpawn")
     end
-    local effectiveAnger = math.min(state.angerLevel, maxAnger)
-    local composition = Config.WAVE_ANGER_COMPOSITION[effectiveAnger] or Config.WAVE_ANGER_COMPOSITION[0]
-
-    -- Add base enemies that scale with wave number
-    local waveScaling = math.floor(state.waveNumber * Config.WAVE_SCALING)
-
-    -- Add enemies from composition
-    for creepType, count in pairs(composition) do
-        -- Scale count slightly with wave number
-        local scaledCount = count + math.floor(waveScaling * (count / 3))
-        for _ = 1, scaledCount do
-            table.insert(queue, creepType)
-        end
+    for _ = 1, spiderCount do
+        table.insert(queue, "voidSpider")
     end
 
     -- Shuffle the queue for variety
@@ -103,7 +93,7 @@ local function _startWave()
     EventBus.emit("wave_started", {
         waveNumber = state.waveNumber,
         enemyCount = #state.spawnQueue,
-        angerLevel = state.angerLevel,
+        tier = state.currentTier,
     })
 end
 
@@ -146,8 +136,9 @@ function Waves.update(dt, creeps)
             _spawnNext()
         end
 
-        -- Check if wave is clear (no more queue and no creeps alive)
-        if #state.spawnQueue == 0 and #creeps == 0 then
+        -- Check if wave spawning is complete (queue empty)
+        -- Note: Don't wait for all creeps to die - click-spawned enemies shouldn't block wave progression
+        if #state.spawnQueue == 0 then
             state.spawning = false
             EventBus.emit("wave_cleared", { waveNumber = state.waveNumber })
 

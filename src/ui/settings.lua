@@ -1,52 +1,56 @@
 -- src/ui/settings.lua
--- Settings menu modal with borderless, resolution, sound, and volume options
+-- Settings menu - full screen scene with void bullet style (matches main menu)
 
 local Config = require("src.config")
 local EventBus = require("src.core.event_bus")
+local Display = require("src.core.display")
 local Fonts = require("src.rendering.fonts")
-local PixelFrames = require("src.ui.pixel_frames")
 local Audio = require("src.systems.audio")
+local Creep = require("src.entities.creep")
+local Cursor = require("src.ui.cursor")
 
 local Settings = {}
 
--- Fixed 16:9 canvas resolution (the game is designed for this)
--- Canvas is always this size, scaled to fit any screen with letterboxing
-local CANVAS_WIDTH = 1280    -- Fixed canvas width
-local CANVAS_HEIGHT = 720    -- Fixed canvas height (16:9 aspect ratio)
-local ASPECT_RATIO = CANVAS_WIDTH / CANVAS_HEIGHT  -- 1.777...
-local PANEL_WIDTH = 320      -- Narrower overlay panel width
+-- Setting definitions
+local SETTINGS_ITEMS = {
+    { id = "borderless", label = "Borderless", type = "checkbox" },
+    { id = "resolution", label = "Resolution", type = "dropdown" },
+    { id = "sound", label = "Sound", type = "checkbox" },
+    { id = "volume", label = "Volume", type = "slider" },
+    { id = "bloom", label = "Bloom", type = "checkbox" },
+    { id = "vignette", label = "Vignette", type = "checkbox" },
+    { id = "fog", label = "Fog Particles", type = "checkbox" },
+    { id = "dust", label = "Dust Particles", type = "checkbox" },
+    { id = "dither", label = "Dither", type = "checkbox" },
+}
 
 -- Private state
 local state = {
     visible = false,
+    time = 0,
+    -- Setting values
     borderless = false,
     resolutionIndex = 1,
     soundEnabled = true,
     volume = 50,
-    -- Visual effects toggles (all enabled by default)
     bloomEnabled = true,
     vignetteEnabled = true,
     fogParticlesEnabled = true,
     dustParticlesEnabled = true,
     ditherEnabled = true,
-    controls = {},
+    -- UI state
+    hoveredItem = nil,
     dropdownOpen = false,
+    hoveredDropdownItem = nil,
     draggingVolume = false,
-    hoverControl = nil,
-    -- Computed layout positions (in game coordinates)
-    x = 0,
-    y = 0,
-    width = 0,
-    height = 0,
-    -- Scaling state
-    scale = 1,
-    offsetX = 0,
-    offsetY = 0,
-    windowWidth = CANVAS_WIDTH,
-    windowHeight = CANVAS_HEIGHT,
-    -- Fixed game dimensions (always 1280x720)
-    gameWidth = CANVAS_WIDTH,
-    gameHeight = CANVAS_HEIGHT,
+    backButtonHovered = false,
+    -- Layout
+    menuItems = {},
+    -- Small voids for each menu item
+    menuVoids = {},
+    -- Hover scale interpolation per item
+    itemScales = {},
+    backButtonScale = 1.0,
 }
 
 -- =============================================================================
@@ -58,159 +62,87 @@ local function _pointInRect(px, py, rx, ry, rw, rh)
 end
 
 local function _calculateLayout()
-    local cfg = Config.UI.settings
-    state.width = cfg.width
-    state.height = cfg.height
-    -- Center in actual window (not game coordinates)
-    state.x = (state.windowWidth - state.width) / 2
-    state.y = (state.windowHeight - state.height) / 2
+    local gameW, gameH = Display.getGameDimensions()
+    local cfg = Config.SETTINGS_MENU
 
-    local padding = cfg.padding
-    local rowSpacing = cfg.rowSpacing
-    local labelWidth = cfg.labelWidth
+    state.menuItems = {}
+    local font = Fonts.get("medium")
+    local fontHeight = font:getHeight()
+
+    -- Find max label width
+    local maxLabelWidth = 0
+    for _, item in ipairs(SETTINGS_ITEMS) do
+        local w = font:getWidth(item.label)
+        if w > maxLabelWidth then maxLabelWidth = w end
+    end
+
+    -- Total width = void + gap + label + gap + control
+    local voidSize = cfg.voidSize
+    local voidTextGap = cfg.voidTextGap
+    local labelControlGap = cfg.labelControlGap
     local controlWidth = cfg.controlWidth
 
-    local contentX = state.x + padding
-    local controlX = contentX + labelWidth
-    local y = state.y + padding + 30  -- After title
+    local totalWidth = voidSize + voidTextGap + maxLabelWidth + labelControlGap + controlWidth
 
-    -- Close button (top right)
-    state.controls.closeButton = {
-        x = state.x + state.width - cfg.closeButtonSize - 8,
-        y = state.y + 8,
-        width = cfg.closeButtonSize,
-        height = cfg.closeButtonSize,
-        type = "close",
-    }
+    -- Calculate positions (centered column)
+    local columnX = (gameW - totalWidth) / 2
+    local startY = cfg.columnY
 
-    -- Borderless checkbox
-    state.controls.borderless = {
-        x = controlX,
-        y = y,
-        width = cfg.checkboxSize,
-        height = cfg.checkboxSize,
-        type = "checkbox",
-    }
-    y = y + cfg.checkboxSize + rowSpacing
+    for i, item in ipairs(SETTINGS_ITEMS) do
+        local itemH = fontHeight + 8
+        local itemY = startY + (i - 1) * cfg.itemSpacing
 
-    -- Resolution dropdown
-    state.controls.resolution = {
-        x = controlX,
-        y = y,
-        width = controlWidth,
-        height = cfg.dropdownHeight,
-        type = "dropdown",
-    }
-    y = y + cfg.dropdownHeight + rowSpacing + 10  -- Extra spacing before audio section
+        local menuItem = {
+            id = item.id,
+            label = item.label,
+            type = item.type,
+            -- Void position (center of the void)
+            voidX = columnX + voidSize / 2,
+            voidY = itemY + itemH / 2,
+            -- Label position
+            labelX = columnX + voidSize + voidTextGap,
+            labelY = itemY,
+            -- Control position
+            controlX = columnX + voidSize + voidTextGap + maxLabelWidth + labelControlGap,
+            controlY = itemY,
+            controlWidth = controlWidth,
+            controlHeight = itemH,
+            -- Hit area (full row)
+            hitX = columnX - 10,
+            hitY = itemY - 4,
+            hitWidth = totalWidth + 20,
+            hitHeight = itemH + 8,
+        }
 
-    -- Separator position
-    state.separatorY = y - 5
-    y = y + 10
+        table.insert(state.menuItems, menuItem)
 
-    -- Sound checkbox
-    state.controls.sound = {
-        x = controlX,
-        y = y,
-        width = cfg.checkboxSize,
-        height = cfg.checkboxSize,
-        type = "checkbox",
-    }
-    y = y + cfg.checkboxSize + rowSpacing
+        -- Initialize scale for this item
+        state.itemScales[item.id] = 1.0
+    end
 
-    -- Volume slider
-    state.controls.volume = {
-        x = controlX,
-        y = y,
-        width = controlWidth - 40,  -- Leave room for percentage
-        height = cfg.sliderHeight,
-        type = "slider",
-    }
-    y = y + cfg.sliderHeight + rowSpacing + 10  -- Extra spacing before visual section
-
-    -- Separator position for visual effects
-    state.separatorY2 = y - 5
-    y = y + 10
-
-    -- Lighting checkbox
-    state.controls.lighting = {
-        x = controlX,
-        y = y,
-        width = cfg.checkboxSize,
-        height = cfg.checkboxSize,
-        type = "checkbox",
-    }
-    y = y + cfg.checkboxSize + rowSpacing
-
-    -- Vignette checkbox
-    state.controls.vignette = {
-        x = controlX,
-        y = y,
-        width = cfg.checkboxSize,
-        height = cfg.checkboxSize,
-        type = "checkbox",
-    }
-    y = y + cfg.checkboxSize + rowSpacing
-
-    -- Fog Particles checkbox
-    state.controls.fogParticles = {
-        x = controlX,
-        y = y,
-        width = cfg.checkboxSize,
-        height = cfg.checkboxSize,
-        type = "checkbox",
-    }
-    y = y + cfg.checkboxSize + rowSpacing
-
-    -- Dust Particles checkbox
-    state.controls.dustParticles = {
-        x = controlX,
-        y = y,
-        width = cfg.checkboxSize,
-        height = cfg.checkboxSize,
-        type = "checkbox",
-    }
-    y = y + cfg.checkboxSize + rowSpacing
-
-    -- Dither checkbox
-    state.controls.dither = {
-        x = controlX,
-        y = y,
-        width = cfg.checkboxSize,
-        height = cfg.checkboxSize,
-        type = "checkbox",
-    }
+    -- Back button position
+    state.backButtonX = 40
+    state.backButtonY = 40
+    state.backButtonW = 120
+    state.backButtonH = 40
 end
 
-local function _updateScale()
-    local windowW, windowH = love.graphics.getDimensions()
-    state.windowWidth = windowW
-    state.windowHeight = windowH
-
-    -- Fixed game dimensions (always 1280x720)
-    state.gameWidth = CANVAS_WIDTH
-    state.gameHeight = CANVAS_HEIGHT
-
-    -- Scale to fit window, preserving 16:9 aspect ratio
-    local windowAspect = windowW / windowH
-
-    if windowAspect > ASPECT_RATIO then
-        -- Window wider than 16:9: pillarbox (black bars on sides)
-        state.scale = windowH / CANVAS_HEIGHT
-        state.offsetX = math.floor((windowW - CANVAS_WIDTH * state.scale) / 2)
-        state.offsetY = 0
-    else
-        -- Window taller than 16:9: letterbox (black bars top/bottom)
-        state.scale = windowW / CANVAS_WIDTH
-        state.offsetX = 0
-        state.offsetY = math.floor((windowH - CANVAS_HEIGHT * state.scale) / 2)
+local function _createMenuVoids()
+    state.menuVoids = {}
+    for _, item in ipairs(SETTINGS_ITEMS) do
+        local void = Creep(0, 0, "voidSpawn")
+        void.spawnPhase = "active"
+        state.menuVoids[item.id] = void
     end
+    -- Back button void
+    state.backVoid = Creep(0, 0, "voidSpawn")
+    state.backVoid.spawnPhase = "active"
 end
 
 local function _applyWindowMode()
     local desktopW, desktopH = love.window.getDesktopDimensions()
 
     if state.borderless then
-        -- Borderless fullscreen
         love.window.setMode(desktopW, desktopH, {
             borderless = true,
             fullscreen = true,
@@ -218,7 +150,6 @@ local function _applyWindowMode()
             resizable = false,
         })
     else
-        -- Windowed mode with selected resolution
         local res = Config.SETTINGS.resolutions[state.resolutionIndex]
         love.window.setMode(res.width, res.height, {
             borderless = false,
@@ -228,27 +159,53 @@ local function _applyWindowMode()
         })
     end
 
-    -- Update scale after window mode change
-    _updateScale()
-
-    -- Notify other systems that window size changed
-    EventBus.emit("window_resized", {
-        width = state.windowWidth,
-        height = state.windowHeight,
-        scale = state.scale,
-        offsetX = state.offsetX,
-        offsetY = state.offsetY,
-        gameWidth = state.gameWidth,
-        gameHeight = state.gameHeight,
-        -- Panel now overlays, so play area is full canvas width
-        playAreaWidth = state.gameWidth,
-        panelWidth = PANEL_WIDTH,
-    })
+    Display.handleResize()
+    _calculateLayout()
 end
 
 local function _applyAudioSettings()
     Audio.setEnabled(state.soundEnabled)
     Audio.setMasterVolume(state.volume / 100)
+end
+
+local function _getSettingValue(id)
+    if id == "borderless" then return state.borderless
+    elseif id == "sound" then return state.soundEnabled
+    elseif id == "bloom" then return state.bloomEnabled
+    elseif id == "vignette" then return state.vignetteEnabled
+    elseif id == "fog" then return state.fogParticlesEnabled
+    elseif id == "dust" then return state.dustParticlesEnabled
+    elseif id == "dither" then return state.ditherEnabled
+    end
+    return false
+end
+
+local function _toggleSetting(id)
+    if id == "borderless" then
+        state.borderless = not state.borderless
+        _applyWindowMode()
+    elseif id == "sound" then
+        state.soundEnabled = not state.soundEnabled
+        _applyAudioSettings()
+    elseif id == "bloom" then
+        state.bloomEnabled = not state.bloomEnabled
+        EventBus.emit("visual_setting_changed", {setting = "bloom", enabled = state.bloomEnabled})
+    elseif id == "vignette" then
+        state.vignetteEnabled = not state.vignetteEnabled
+    elseif id == "fog" then
+        state.fogParticlesEnabled = not state.fogParticlesEnabled
+    elseif id == "dust" then
+        state.dustParticlesEnabled = not state.dustParticlesEnabled
+    elseif id == "dither" then
+        state.ditherEnabled = not state.ditherEnabled
+        Config.TOWER_DITHER.enabled = state.ditherEnabled
+    end
+end
+
+local function _isDisabled(id)
+    if id == "resolution" then return state.borderless end
+    if id == "volume" then return not state.soundEnabled end
+    return false
 end
 
 -- =============================================================================
@@ -260,7 +217,6 @@ function Settings.init()
     state.soundEnabled = Config.AUDIO.enabled
     state.volume = math.floor(Config.AUDIO.masterVolume * 100)
 
-    -- Set visual effects from Config
     local vfx = Config.SETTINGS.visualEffects
     state.bloomEnabled = vfx.bloom
     state.vignetteEnabled = vfx.vignette
@@ -281,178 +237,162 @@ function Settings.init()
     local _, _, flags = love.window.getMode()
     state.borderless = flags.borderless or flags.fullscreen
 
-    -- Initialize scale and dynamic dimensions
-    _updateScale()
-
-    -- Emit initial window dimensions so other systems can initialize properly
-    EventBus.emit("window_resized", {
-        width = state.windowWidth,
-        height = state.windowHeight,
-        scale = state.scale,
-        offsetX = state.offsetX,
-        offsetY = state.offsetY,
-        gameWidth = state.gameWidth,
-        gameHeight = state.gameHeight,
-        -- Panel now overlays, so play area is full canvas width
-        playAreaWidth = state.gameWidth,
-        panelWidth = PANEL_WIDTH,
-    })
+    -- Initialize display scaling
+    Display.init()
+    Display.handleResize()
 
     _calculateLayout()
+    _createMenuVoids()
 end
 
-function Settings.update(mouseX, mouseY)
+function Settings.update(screenX, screenY)
     if not state.visible then return end
 
-    state.hoverControl = nil
+    -- Convert screen to game coordinates
+    local mouseX, mouseY = Display.screenToGame(screenX, screenY)
 
-    -- Check hover states
-    for name, ctrl in pairs(state.controls) do
-        if _pointInRect(mouseX, mouseY, ctrl.x, ctrl.y, ctrl.width, ctrl.height) then
-            state.hoverControl = name
-            break
-        end
+    local dt = love.timer.getDelta()
+    local cfg = Config.SETTINGS_MENU
+    state.time = state.time + dt
+
+    -- Update void spawn animation times
+    for _, void in pairs(state.menuVoids) do
+        void.time = void.time + dt
+    end
+    if state.backVoid then
+        state.backVoid.time = state.backVoid.time + dt
     end
 
-    -- Check dropdown items if open
-    if state.dropdownOpen then
-        local cfg = Config.UI.settings
-        local dropdownCtrl = state.controls.resolution
-        for i, res in ipairs(Config.SETTINGS.resolutions) do
-            local itemY = dropdownCtrl.y + dropdownCtrl.height + (i - 1) * cfg.dropdownItemHeight
-            if _pointInRect(mouseX, mouseY, dropdownCtrl.x, itemY, dropdownCtrl.width, cfg.dropdownItemHeight) then
-                state.hoverControl = "dropdown_item_" .. i
+    -- Check back button hover
+    state.backButtonHovered = _pointInRect(mouseX, mouseY,
+        state.backButtonX, state.backButtonY, state.backButtonW, state.backButtonH)
+
+    -- Check hover states for menu items
+    state.hoveredItem = nil
+    if not state.dropdownOpen then
+        for _, item in ipairs(state.menuItems) do
+            if not _isDisabled(item.id) and _pointInRect(mouseX, mouseY, item.hitX, item.hitY, item.hitWidth, item.hitHeight) then
+                state.hoveredItem = item.id
                 break
             end
         end
     end
 
+    -- Check dropdown item hover
+    state.hoveredDropdownItem = nil
+    if state.dropdownOpen then
+        local resItem = nil
+        for _, item in ipairs(state.menuItems) do
+            if item.id == "resolution" then resItem = item break end
+        end
+        if resItem then
+            local dropdownItemH = cfg.dropdownItemHeight
+            for i, res in ipairs(Config.SETTINGS.resolutions) do
+                local itemY = resItem.controlY + resItem.controlHeight + (i - 1) * dropdownItemH
+                if _pointInRect(mouseX, mouseY, resItem.controlX, itemY, resItem.controlWidth, dropdownItemH) then
+                    state.hoveredDropdownItem = i
+                    break
+                end
+            end
+        end
+    end
+
+    -- Smoothly interpolate scales for hover effect
+    for _, item in ipairs(SETTINGS_ITEMS) do
+        local targetScale = (state.hoveredItem == item.id) and cfg.hoverScale or 1.0
+        local currentScale = state.itemScales[item.id]
+        state.itemScales[item.id] = currentScale + (targetScale - currentScale) * dt * 12
+    end
+
+    -- Back button scale
+    local backTargetScale = state.backButtonHovered and cfg.hoverScale or 1.0
+    state.backButtonScale = state.backButtonScale + (backTargetScale - state.backButtonScale) * dt * 12
+
     -- Handle volume slider dragging
     if state.draggingVolume then
-        local ctrl = state.controls.volume
-        local relX = mouseX - ctrl.x
-        local percent = math.max(0, math.min(1, relX / ctrl.width))
-        state.volume = math.floor(percent * 100)
-        _applyAudioSettings()
+        local volItem = nil
+        for _, item in ipairs(state.menuItems) do
+            if item.id == "volume" then volItem = item break end
+        end
+        if volItem then
+            local relX = mouseX - volItem.controlX
+            local percent = math.max(0, math.min(1, relX / volItem.controlWidth))
+            state.volume = math.floor(percent * 100)
+            _applyAudioSettings()
+        end
+    end
+
+    -- Update cursor
+    if state.hoveredItem or state.backButtonHovered or state.hoveredDropdownItem then
+        Cursor.setCursor(Cursor.POINTER)
+    else
+        Cursor.setCursor(Cursor.ARROW)
     end
 end
 
-function Settings.handleClick(x, y)
+function Settings.handleClick(screenX, screenY)
     if not state.visible then return false end
 
-    -- Close button
-    local closeBtn = state.controls.closeButton
-    if _pointInRect(x, y, closeBtn.x, closeBtn.y, closeBtn.width, closeBtn.height) then
+    local x, y = Display.screenToGame(screenX, screenY)
+    local cfg = Config.SETTINGS_MENU
+
+    -- Back button
+    if _pointInRect(x, y, state.backButtonX, state.backButtonY, state.backButtonW, state.backButtonH) then
         Settings.hide()
         return true
     end
 
-    -- Click outside modal closes it (and dropdown)
-    if not _pointInRect(x, y, state.x, state.y, state.width, state.height) then
-        if state.dropdownOpen then
-            state.dropdownOpen = false
-        else
-            Settings.hide()
-        end
-        return true
-    end
-
-    -- Dropdown items (check before main dropdown)
+    -- Close dropdown if clicking outside
     if state.dropdownOpen then
-        local cfg = Config.UI.settings
-        local dropdownCtrl = state.controls.resolution
-        for i, res in ipairs(Config.SETTINGS.resolutions) do
-            local itemY = dropdownCtrl.y + dropdownCtrl.height + (i - 1) * cfg.dropdownItemHeight
-            if _pointInRect(x, y, dropdownCtrl.x, itemY, dropdownCtrl.width, cfg.dropdownItemHeight) then
-                state.resolutionIndex = i
-                state.dropdownOpen = false
-                if not state.borderless then
-                    _applyWindowMode()
-                    _calculateLayout()
+        local resItem = nil
+        for _, item in ipairs(state.menuItems) do
+            if item.id == "resolution" then resItem = item break end
+        end
+
+        -- Check dropdown items first
+        if resItem then
+            local dropdownItemH = cfg.dropdownItemHeight
+            for i, res in ipairs(Config.SETTINGS.resolutions) do
+                local itemY = resItem.controlY + resItem.controlHeight + (i - 1) * dropdownItemH
+                if _pointInRect(x, y, resItem.controlX, itemY, resItem.controlWidth, dropdownItemH) then
+                    state.resolutionIndex = i
+                    state.dropdownOpen = false
+                    if not state.borderless then
+                        _applyWindowMode()
+                    end
+                    return true
                 end
-                return true
             end
         end
+
         -- Click elsewhere closes dropdown
         state.dropdownOpen = false
         return true
     end
 
-    -- Borderless checkbox
-    local borderlessCtrl = state.controls.borderless
-    if _pointInRect(x, y, borderlessCtrl.x, borderlessCtrl.y, borderlessCtrl.width, borderlessCtrl.height) then
-        state.borderless = not state.borderless
-        _applyWindowMode()
-        _calculateLayout()
-        return true
+    -- Check menu items
+    for _, item in ipairs(state.menuItems) do
+        if _pointInRect(x, y, item.hitX, item.hitY, item.hitWidth, item.hitHeight) then
+            if _isDisabled(item.id) then
+                return true
+            end
+
+            if item.type == "checkbox" then
+                _toggleSetting(item.id)
+            elseif item.type == "dropdown" then
+                state.dropdownOpen = not state.dropdownOpen
+            elseif item.type == "slider" then
+                state.draggingVolume = true
+                local relX = x - item.controlX
+                local percent = math.max(0, math.min(1, relX / item.controlWidth))
+                state.volume = math.floor(percent * 100)
+                _applyAudioSettings()
+            end
+            return true
+        end
     end
 
-    -- Resolution dropdown toggle (only if not borderless)
-    local resCtrl = state.controls.resolution
-    if not state.borderless and _pointInRect(x, y, resCtrl.x, resCtrl.y, resCtrl.width, resCtrl.height) then
-        state.dropdownOpen = not state.dropdownOpen
-        return true
-    end
-
-    -- Sound checkbox
-    local soundCtrl = state.controls.sound
-    if _pointInRect(x, y, soundCtrl.x, soundCtrl.y, soundCtrl.width, soundCtrl.height) then
-        state.soundEnabled = not state.soundEnabled
-        _applyAudioSettings()
-        return true
-    end
-
-    -- Volume slider
-    local volCtrl = state.controls.volume
-    if state.soundEnabled and _pointInRect(x, y, volCtrl.x, volCtrl.y, volCtrl.width, volCtrl.height) then
-        state.draggingVolume = true
-        local relX = x - volCtrl.x
-        local percent = math.max(0, math.min(1, relX / volCtrl.width))
-        state.volume = math.floor(percent * 100)
-        _applyAudioSettings()
-        return true
-    end
-
-    -- Bloom checkbox
-    local lightingCtrl = state.controls.lighting
-    if _pointInRect(x, y, lightingCtrl.x, lightingCtrl.y, lightingCtrl.width, lightingCtrl.height) then
-        state.bloomEnabled = not state.bloomEnabled
-        -- Sync with Bloom module
-        local Bloom = require("src.rendering.bloom")
-        Bloom.setEnabled(state.bloomEnabled)
-        return true
-    end
-
-    -- Vignette checkbox
-    local vignetteCtrl = state.controls.vignette
-    if _pointInRect(x, y, vignetteCtrl.x, vignetteCtrl.y, vignetteCtrl.width, vignetteCtrl.height) then
-        state.vignetteEnabled = not state.vignetteEnabled
-        return true
-    end
-
-    -- Fog Particles checkbox
-    local fogCtrl = state.controls.fogParticles
-    if _pointInRect(x, y, fogCtrl.x, fogCtrl.y, fogCtrl.width, fogCtrl.height) then
-        state.fogParticlesEnabled = not state.fogParticlesEnabled
-        return true
-    end
-
-    -- Dust Particles checkbox
-    local dustCtrl = state.controls.dustParticles
-    if _pointInRect(x, y, dustCtrl.x, dustCtrl.y, dustCtrl.width, dustCtrl.height) then
-        state.dustParticlesEnabled = not state.dustParticlesEnabled
-        return true
-    end
-
-    -- Dither checkbox
-    local ditherCtrl = state.controls.dither
-    if _pointInRect(x, y, ditherCtrl.x, ditherCtrl.y, ditherCtrl.width, ditherCtrl.height) then
-        state.ditherEnabled = not state.ditherEnabled
-        Config.TOWER_DITHER.enabled = state.ditherEnabled
-        return true
-    end
-
-    return true  -- Consume click within modal
+    return true
 end
 
 function Settings.handleRelease(x, y)
@@ -462,120 +402,136 @@ end
 function Settings.draw()
     if not state.visible then return end
 
-    local cfg = Config.UI.settings
-    local padding = cfg.padding
-    local labelWidth = cfg.labelWidth
+    local gameW, gameH = Display.getGameDimensions()
+    local cfg = Config.SETTINGS_MENU
 
-    -- Darken background (use window dimensions, not game dimensions)
-    love.graphics.setColor(0, 0, 0, 0.6)
-    love.graphics.rectangle("fill", 0, 0, state.windowWidth, state.windowHeight)
+    -- Draw solid dark background (full screen scene)
+    love.graphics.setColor(cfg.backgroundColor)
+    love.graphics.rectangle("fill", 0, 0, gameW, gameH)
 
-    -- Main frame
-    PixelFrames.draw8BitFrame(state.x, state.y, state.width, state.height, "settings")
+    -- Draw back button with void
+    local backScale = state.backButtonScale
+    local backVoidX = state.backButtonX + 20
+    local backVoidY = state.backButtonY + state.backButtonH / 2
 
-    -- Title
-    Fonts.setFont("medium")
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.print("SETTINGS", state.x + padding, state.y + padding)
-
-    -- Close button
-    local closeBtn = state.controls.closeButton
-    local closeHovered = state.hoverControl == "closeButton"
-    love.graphics.setColor(closeHovered and Config.COLORS.ruby or Config.COLORS.textSecondary)
-    love.graphics.print("X", closeBtn.x + 6, closeBtn.y + 3)
-
-    local contentX = state.x + padding
-    local controlX = contentX + labelWidth
-
-    -- Borderless row
-    local borderlessCtrl = state.controls.borderless
-    Fonts.setFont("small")
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.print("Borderless", contentX, borderlessCtrl.y + 2)
-    _drawCheckbox(borderlessCtrl, state.borderless, state.hoverControl == "borderless")
-
-    -- Resolution row
-    local resCtrl = state.controls.resolution
-    local resDisabled = state.borderless
-    if resDisabled then
-        love.graphics.setColor(Config.COLORS.textDisabled)
-    else
-        love.graphics.setColor(Config.COLORS.textPrimary)
+    if state.backVoid then
+        local voidScale = cfg.voidScale * backScale
+        love.graphics.push()
+        love.graphics.translate(backVoidX, backVoidY)
+        love.graphics.scale(voidScale, voidScale)
+        state.backVoid:draw()
+        love.graphics.pop()
     end
-    love.graphics.print("Resolution", contentX, resCtrl.y + 6)
-    _drawDropdown(resCtrl, Config.SETTINGS.resolutions[state.resolutionIndex].label,
-                  state.hoverControl == "resolution", resDisabled, state.dropdownOpen)
+
+    -- Back text
+    Fonts.setFont("medium")
+    local backText = "BACK"
+    local font = Fonts.get("medium")
+    local backTextX = backVoidX + 25
+    local backTextY = state.backButtonY + (state.backButtonH - font:getHeight()) / 2
+
+    if state.backButtonHovered then
+        love.graphics.setColor(cfg.textHoverColor)
+    else
+        love.graphics.setColor(cfg.textColor)
+    end
+
+    love.graphics.push()
+    love.graphics.translate(backTextX, backTextY + font:getHeight() / 2)
+    love.graphics.scale(backScale, backScale)
+    love.graphics.translate(-backTextX, -(backTextY + font:getHeight() / 2))
+    love.graphics.print(backText, backTextX, backTextY)
+    love.graphics.pop()
+
+    -- Draw title
+    Fonts.setFont("title")
+    love.graphics.setColor(cfg.textColor)
+    love.graphics.printf("SETTINGS", 0, cfg.titleY, gameW, "center")
+
+    -- Draw menu items
+    Fonts.setFont("medium")
+    font = Fonts.get("medium")
+
+    for _, item in ipairs(state.menuItems) do
+        local isHovered = state.hoveredItem == item.id
+        local scale = state.itemScales[item.id]
+        local void = state.menuVoids[item.id]
+        local disabled = _isDisabled(item.id)
+
+        -- Draw void bullet
+        if void then
+            local voidScale = cfg.voidScale * scale
+            if disabled then voidScale = voidScale * 0.7 end
+            love.graphics.push()
+            love.graphics.translate(item.voidX, item.voidY)
+            love.graphics.scale(voidScale, voidScale)
+            if disabled then
+                love.graphics.setColor(0.3, 0.3, 0.3, 0.5)
+            end
+            void:draw()
+            love.graphics.pop()
+        end
+
+        -- Draw label with scale effect
+        local labelCenterY = item.labelY + font:getHeight() / 2
+
+        if disabled then
+            love.graphics.setColor(cfg.textDisabledColor)
+        elseif isHovered then
+            love.graphics.setColor(cfg.textHoverColor)
+        else
+            love.graphics.setColor(cfg.textColor)
+        end
+
+        love.graphics.push()
+        love.graphics.translate(item.labelX, labelCenterY)
+        love.graphics.scale(scale, scale)
+        love.graphics.translate(-item.labelX, -labelCenterY)
+        love.graphics.print(item.label, item.labelX, item.labelY)
+        love.graphics.pop()
+
+        -- Draw control based on type
+        if item.type == "checkbox" then
+            _drawCheckbox(item, _getSettingValue(item.id), isHovered, disabled, scale)
+        elseif item.type == "dropdown" then
+            _drawDropdown(item, Config.SETTINGS.resolutions[state.resolutionIndex].label,
+                         isHovered, disabled, state.dropdownOpen, scale)
+        elseif item.type == "slider" then
+            _drawSlider(item, state.volume / 100, isHovered, disabled, scale)
+        end
+    end
 
     -- Draw dropdown items if open
-    if state.dropdownOpen and not resDisabled then
-        _drawDropdownItems(resCtrl)
+    if state.dropdownOpen then
+        local resItem = nil
+        for _, item in ipairs(state.menuItems) do
+            if item.id == "resolution" then resItem = item break end
+        end
+        if resItem then
+            _drawDropdownItems(resItem)
+        end
     end
 
-    -- Separator
-    love.graphics.setColor(Config.COLORS.frameMid)
-    love.graphics.rectangle("fill", contentX, state.separatorY, state.width - padding * 2, 2)
-
-    -- Sound row
-    local soundCtrl = state.controls.sound
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.print("Sound", contentX, soundCtrl.y + 2)
-    _drawCheckbox(soundCtrl, state.soundEnabled, state.hoverControl == "sound")
-
-    -- Volume row
-    local volCtrl = state.controls.volume
-    local volDisabled = not state.soundEnabled
-    if volDisabled then
-        love.graphics.setColor(Config.COLORS.textDisabled)
-    else
-        love.graphics.setColor(Config.COLORS.textPrimary)
-    end
-    love.graphics.print("Volume", contentX, volCtrl.y)
-    _drawSlider(volCtrl, state.volume / 100, state.hoverControl == "volume", volDisabled)
-
-    -- Volume percentage
-    love.graphics.setColor(volDisabled and Config.COLORS.textDisabled or Config.COLORS.textSecondary)
-    love.graphics.print(state.volume .. "%", volCtrl.x + volCtrl.width + 8, volCtrl.y)
-
-    -- Separator for visual effects
-    love.graphics.setColor(Config.COLORS.frameMid)
-    love.graphics.rectangle("fill", contentX, state.separatorY2, state.width - padding * 2, 2)
-
-    -- Bloom row
-    local lightingCtrl = state.controls.lighting
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.print("Bloom", contentX, lightingCtrl.y + 2)
-    _drawCheckbox(lightingCtrl, state.bloomEnabled, state.hoverControl == "lighting")
-
-    -- Vignette row
-    local vignetteCtrl = state.controls.vignette
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.print("Vignette", contentX, vignetteCtrl.y + 2)
-    _drawCheckbox(vignetteCtrl, state.vignetteEnabled, state.hoverControl == "vignette")
-
-    -- Fog Particles row
-    local fogCtrl = state.controls.fogParticles
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.print("Fog", contentX, fogCtrl.y + 2)
-    _drawCheckbox(fogCtrl, state.fogParticlesEnabled, state.hoverControl == "fogParticles")
-
-    -- Dust Particles row
-    local dustCtrl = state.controls.dustParticles
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.print("Dust", contentX, dustCtrl.y + 2)
-    _drawCheckbox(dustCtrl, state.dustParticlesEnabled, state.hoverControl == "dustParticles")
-
-    -- Dither row
-    local ditherCtrl = state.controls.dither
-    love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.print("Dither", contentX, ditherCtrl.y + 2)
-    _drawCheckbox(ditherCtrl, state.ditherEnabled, state.hoverControl == "dither")
+    -- Draw hint at bottom
+    Fonts.setFont("small")
+    love.graphics.setColor(cfg.hintColor)
+    love.graphics.printf("Press ESC or click BACK to return", 0, gameH - 40, gameW, "center")
 end
 
 function Settings.show()
     state.visible = true
     state.dropdownOpen = false
     state.draggingVolume = false
+    state.time = 0
+
+    -- Reset scales
+    for _, item in ipairs(SETTINGS_ITEMS) do
+        state.itemScales[item.id] = 1.0
+    end
+    state.backButtonScale = 1.0
+
     _calculateLayout()
+    _createMenuVoids()
 end
 
 function Settings.hide()
@@ -594,59 +550,6 @@ end
 
 function Settings.isVisible()
     return state.visible
-end
-
--- =============================================================================
--- SCALING API
--- =============================================================================
-
--- Get the current scale factor
-function Settings.getScale()
-    return state.scale
-end
-
--- Get the offset to center the game
-function Settings.getOffset()
-    return state.offsetX, state.offsetY
-end
-
--- Get the current window dimensions
-function Settings.getWindowDimensions()
-    return state.windowWidth, state.windowHeight
-end
-
--- Get the current game dimensions (width is dynamic based on aspect ratio)
-function Settings.getGameDimensions()
-    return state.gameWidth, state.gameHeight
-end
-
--- Get the fixed panel width
-function Settings.getPanelWidth()
-    return PANEL_WIDTH
-end
-
--- Get the play area width (full canvas width since panel overlays)
-function Settings.getPlayAreaWidth()
-    return state.gameWidth
-end
-
--- Get the panel X position (where panel overlay starts)
-function Settings.getPanelX()
-    return state.gameWidth - PANEL_WIDTH
-end
-
--- Convert screen coordinates to game coordinates
-function Settings.screenToGame(screenX, screenY)
-    local gameX = (screenX - state.offsetX) / state.scale
-    local gameY = (screenY - state.offsetY) / state.scale
-    return gameX, gameY
-end
-
--- Convert game coordinates to screen coordinates
-function Settings.gameToScreen(gameX, gameY)
-    local screenX = gameX * state.scale + state.offsetX
-    local screenY = gameY * state.scale + state.offsetY
-    return screenX, screenY
 end
 
 -- =============================================================================
@@ -673,25 +576,19 @@ function Settings.isDitherEnabled()
     return state.ditherEnabled
 end
 
--- Set bloom state (for keyboard shortcut)
 function Settings.setBloomEnabled(enabled)
     state.bloomEnabled = enabled
 end
 
--- Toggle bloom (for keyboard shortcut)
 function Settings.toggleBloom()
     state.bloomEnabled = not state.bloomEnabled
-    -- Sync with Bloom module
-    local Bloom = require("src.rendering.bloom")
-    Bloom.setEnabled(state.bloomEnabled)
+    EventBus.emit("visual_setting_changed", {setting = "bloom", enabled = state.bloomEnabled})
     return state.bloomEnabled
 end
 
--- Toggle borderless mode (for keyboard shortcut)
 function Settings.toggleBorderless()
     state.borderless = not state.borderless
     _applyWindowMode()
-    _calculateLayout()
     return state.borderless
 end
 
@@ -699,156 +596,216 @@ end
 -- UI DRAWING HELPERS
 -- =============================================================================
 
-function _drawCheckbox(ctrl, checked, hovered)
-    local cfg = Config.UI.settings
+function _drawCheckbox(item, checked, hovered, disabled, scale)
+    local cfg = Config.SETTINGS_MENU
     local size = cfg.checkboxSize
 
+    local cx = item.controlX + size / 2
+    local cy = item.controlY + item.controlHeight / 2
+
+    love.graphics.push()
+    love.graphics.translate(cx, cy)
+    love.graphics.scale(scale, scale)
+    love.graphics.translate(-cx, -cy)
+
+    local x = item.controlX
+    local y = item.controlY + (item.controlHeight - size) / 2
+
     -- Background
-    if hovered then
-        love.graphics.setColor(Config.UI.frames.highlight.background)
+    if disabled then
+        love.graphics.setColor(0.15, 0.12, 0.18, 0.5)
+    elseif hovered then
+        love.graphics.setColor(0.25, 0.2, 0.3, 0.8)
     else
-        love.graphics.setColor(Config.UI.frames.standard.background)
+        love.graphics.setColor(0.12, 0.1, 0.15, 0.8)
     end
-    love.graphics.rectangle("fill", ctrl.x, ctrl.y, size, size)
+    love.graphics.rectangle("fill", x, y, size, size)
 
     -- Border
-    if hovered then
-        love.graphics.setColor(Config.UI.frames.highlight.border)
+    if disabled then
+        love.graphics.setColor(0.3, 0.25, 0.35, 0.5)
+    elseif hovered then
+        love.graphics.setColor(cfg.textHoverColor)
     else
-        love.graphics.setColor(Config.UI.frames.standard.border)
+        love.graphics.setColor(0.5, 0.4, 0.6, 0.8)
     end
     love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", ctrl.x, ctrl.y, size, size)
+    love.graphics.rectangle("line", x, y, size, size)
 
     -- Checkmark
     if checked then
-        love.graphics.setColor(Config.COLORS.emerald)
-        local inset = 4
+        if disabled then
+            love.graphics.setColor(0.4, 0.6, 0.4, 0.5)
+        else
+            love.graphics.setColor(Config.COLORS.emerald)
+        end
+        local inset = 5
         love.graphics.setLineWidth(3)
         love.graphics.line(
-            ctrl.x + inset, ctrl.y + size / 2,
-            ctrl.x + size / 2 - 1, ctrl.y + size - inset,
-            ctrl.x + size - inset, ctrl.y + inset
+            x + inset, y + size / 2,
+            x + size / 2 - 1, y + size - inset,
+            x + size - inset, y + inset
         )
     end
+
+    love.graphics.pop()
 end
 
-function _drawDropdown(ctrl, label, hovered, disabled, open)
-    local cfg = Config.UI.settings
+function _drawDropdown(item, label, hovered, disabled, open, scale)
+    local cfg = Config.SETTINGS_MENU
+
+    local cx = item.controlX + item.controlWidth / 2
+    local cy = item.controlY + item.controlHeight / 2
+
+    love.graphics.push()
+    love.graphics.translate(cx, cy)
+    love.graphics.scale(scale, scale)
+    love.graphics.translate(-cx, -cy)
+
+    local x = item.controlX
+    local y = item.controlY
+    local w = item.controlWidth
+    local h = item.controlHeight
 
     -- Background
     if disabled then
-        love.graphics.setColor(Config.UI.frames.disabled.background)
+        love.graphics.setColor(0.15, 0.12, 0.18, 0.5)
     elseif hovered or open then
-        love.graphics.setColor(Config.UI.frames.highlight.background)
+        love.graphics.setColor(0.25, 0.2, 0.3, 0.8)
     else
-        love.graphics.setColor(Config.UI.frames.standard.background)
+        love.graphics.setColor(0.12, 0.1, 0.15, 0.8)
     end
-    love.graphics.rectangle("fill", ctrl.x, ctrl.y, ctrl.width, ctrl.height)
+    love.graphics.rectangle("fill", x, y, w, h)
 
     -- Border
     if disabled then
-        love.graphics.setColor(Config.UI.frames.disabled.border)
+        love.graphics.setColor(0.3, 0.25, 0.35, 0.5)
     elseif hovered or open then
-        love.graphics.setColor(Config.UI.frames.highlight.border)
+        love.graphics.setColor(cfg.textHoverColor)
     else
-        love.graphics.setColor(Config.UI.frames.standard.border)
+        love.graphics.setColor(0.5, 0.4, 0.6, 0.8)
     end
     love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", ctrl.x, ctrl.y, ctrl.width, ctrl.height)
+    love.graphics.rectangle("line", x, y, w, h)
 
     -- Label
     Fonts.setFont("small")
     if disabled then
-        love.graphics.setColor(Config.COLORS.textDisabled)
+        love.graphics.setColor(cfg.textDisabledColor)
     else
-        love.graphics.setColor(Config.COLORS.textPrimary)
+        love.graphics.setColor(cfg.textColor)
     end
-    love.graphics.print(label, ctrl.x + 8, ctrl.y + 6)
+    love.graphics.print(label, x + 10, y + (h - Fonts.get("small"):getHeight()) / 2)
 
     -- Arrow
     local arrowChar = open and "^" or "v"
-    love.graphics.print(arrowChar, ctrl.x + ctrl.width - 16, ctrl.y + 6)
+    love.graphics.print(arrowChar, x + w - 20, y + (h - Fonts.get("small"):getHeight()) / 2)
+
+    love.graphics.pop()
 end
 
-function _drawDropdownItems(ctrl)
-    local cfg = Config.UI.settings
+function _drawDropdownItems(item)
+    local cfg = Config.SETTINGS_MENU
     local itemHeight = cfg.dropdownItemHeight
 
     for i, res in ipairs(Config.SETTINGS.resolutions) do
-        local itemY = ctrl.y + ctrl.height + (i - 1) * itemHeight
-        local hovered = state.hoverControl == "dropdown_item_" .. i
+        local itemY = item.controlY + item.controlHeight + (i - 1) * itemHeight
+        local hovered = state.hoveredDropdownItem == i
         local selected = i == state.resolutionIndex
 
         -- Background
         if hovered then
-            love.graphics.setColor(Config.UI.frames.highlight.background)
+            love.graphics.setColor(0.3, 0.25, 0.35, 0.95)
         else
-            love.graphics.setColor(Config.UI.frames.settings.background)
+            love.graphics.setColor(0.12, 0.1, 0.15, 0.95)
         end
-        love.graphics.rectangle("fill", ctrl.x, itemY, ctrl.width, itemHeight)
+        love.graphics.rectangle("fill", item.controlX, itemY, item.controlWidth, itemHeight)
 
         -- Border
-        love.graphics.setColor(Config.UI.frames.standard.border)
+        love.graphics.setColor(0.5, 0.4, 0.6, 0.8)
         love.graphics.setLineWidth(1)
-        love.graphics.rectangle("line", ctrl.x, itemY, ctrl.width, itemHeight)
+        love.graphics.rectangle("line", item.controlX, itemY, item.controlWidth, itemHeight)
 
         -- Label
         Fonts.setFont("small")
         if selected then
             love.graphics.setColor(Config.COLORS.gold)
         elseif hovered then
-            love.graphics.setColor(Config.COLORS.textPrimary)
+            love.graphics.setColor(cfg.textHoverColor)
         else
-            love.graphics.setColor(Config.COLORS.textSecondary)
+            love.graphics.setColor(cfg.textColor)
         end
-        love.graphics.print(res.label, ctrl.x + 8, itemY + 4)
+        love.graphics.print(res.label, item.controlX + 10, itemY + (itemHeight - Fonts.get("small"):getHeight()) / 2)
     end
 end
 
-function _drawSlider(ctrl, percent, hovered, disabled)
-    local cfg = Config.UI.settings
-    local trackHeight = cfg.sliderTrackHeight
-    local trackY = ctrl.y + (ctrl.height - trackHeight) / 2
+function _drawSlider(item, percent, hovered, disabled, scale)
+    local cfg = Config.SETTINGS_MENU
+
+    local cx = item.controlX + item.controlWidth / 2
+    local cy = item.controlY + item.controlHeight / 2
+
+    love.graphics.push()
+    love.graphics.translate(cx, cy)
+    love.graphics.scale(scale, scale)
+    love.graphics.translate(-cx, -cy)
+
+    local x = item.controlX
+    local y = item.controlY
+    local w = item.controlWidth - 50  -- Leave room for percentage
+    local h = item.controlHeight
+    local trackHeight = 8
+    local trackY = y + (h - trackHeight) / 2
 
     -- Track background
     if disabled then
-        love.graphics.setColor(Config.UI.frames.disabled.background)
+        love.graphics.setColor(0.15, 0.12, 0.18, 0.5)
     else
-        love.graphics.setColor(Config.UI.frames.standard.background)
+        love.graphics.setColor(0.12, 0.1, 0.15, 0.8)
     end
-    love.graphics.rectangle("fill", ctrl.x, trackY, ctrl.width, trackHeight)
+    love.graphics.rectangle("fill", x, trackY, w, trackHeight)
 
     -- Filled portion
     if not disabled then
         love.graphics.setColor(Config.COLORS.emerald[1], Config.COLORS.emerald[2], Config.COLORS.emerald[3], 0.8)
-        love.graphics.rectangle("fill", ctrl.x, trackY, ctrl.width * percent, trackHeight)
+        love.graphics.rectangle("fill", x, trackY, w * percent, trackHeight)
     end
 
     -- Track border
     if disabled then
-        love.graphics.setColor(Config.UI.frames.disabled.border)
+        love.graphics.setColor(0.3, 0.25, 0.35, 0.5)
     elseif hovered then
-        love.graphics.setColor(Config.UI.frames.highlight.border)
+        love.graphics.setColor(cfg.textHoverColor)
     else
-        love.graphics.setColor(Config.UI.frames.standard.border)
+        love.graphics.setColor(0.5, 0.4, 0.6, 0.8)
     end
     love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", ctrl.x, trackY, ctrl.width, trackHeight)
+    love.graphics.rectangle("line", x, trackY, w, trackHeight)
 
     -- Handle
-    local handleX = ctrl.x + ctrl.width * percent
-    local handleSize = ctrl.height
+    local handleX = x + w * percent
+    local handleSize = 16
     if disabled then
-        love.graphics.setColor(Config.UI.frames.disabled.accent)
+        love.graphics.setColor(0.3, 0.25, 0.35, 0.5)
     elseif hovered or state.draggingVolume then
         love.graphics.setColor(Config.COLORS.gold)
     else
-        love.graphics.setColor(Config.UI.frames.standard.accent)
+        love.graphics.setColor(0.6, 0.5, 0.7, 1.0)
     end
-    love.graphics.rectangle("fill", handleX - handleSize / 2, ctrl.y, handleSize, handleSize)
-    love.graphics.setColor(Config.UI.frames.standard.border)
-    love.graphics.rectangle("line", handleX - handleSize / 2, ctrl.y, handleSize, handleSize)
+    love.graphics.rectangle("fill", handleX - handleSize / 2, y + (h - handleSize) / 2, handleSize, handleSize)
+    love.graphics.setColor(0.5, 0.4, 0.6, 0.8)
+    love.graphics.rectangle("line", handleX - handleSize / 2, y + (h - handleSize) / 2, handleSize, handleSize)
+
+    -- Percentage text
+    Fonts.setFont("small")
+    if disabled then
+        love.graphics.setColor(cfg.textDisabledColor)
+    else
+        love.graphics.setColor(cfg.textColor)
+    end
+    love.graphics.print(math.floor(percent * 100) .. "%", x + w + 10, y + (h - Fonts.get("small"):getHeight()) / 2)
+
+    love.graphics.pop()
 end
 
 return Settings

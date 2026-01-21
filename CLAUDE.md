@@ -171,13 +171,18 @@ src/
 │
 ├── core/                 # Engine-level, game-agnostic
 │   ├── state_machine.lua     # Game state management
-│   └── event_bus.lua         # Pub/sub event system
+│   ├── event_bus.lua         # Pub/sub event system
+│   ├── display.lua           # Canvas scaling, letterboxing, coordinate conversion
+│   ├── camera.lua            # World camera: pan, zoom, drag-to-pan
+│   └── entity_manager.lua    # Entity collection management
 │
 ├── systems/              # Game logic, no rendering
 │   ├── economy.lua           # Gold, income, spending
 │   ├── waves.lua             # Wave spawning and composition
 │   ├── combat.lua            # Damage calculation, targeting
-│   └── pathfinding.lua       # A*, flow fields
+│   ├── pathfinding.lua       # A*, flow fields
+│   ├── spawn_coordinator.lua # Creep spawn coordination
+│   └── upgrades.lua          # Upgrade system
 │
 ├── entities/             # Game objects
 │   ├── tower.lua             # Tower entity with upgrades
@@ -190,7 +195,9 @@ src/
 │   ├── background.lua        # Procedural pixelated ground texture
 │   ├── procedural.lua        # Shared procedural noise functions (fbm, hash)
 │   ├── fonts.lua             # Font loading and management
-│   └── atmosphere.lua        # Atmospheric visual effects
+│   ├── atmosphere.lua        # Atmospheric visual effects
+│   ├── game_renderer.lua     # Game rendering orchestration
+│   └── grid_renderer.lua     # Grid overlay and path visualization
 │
 ├── world/                # Play area
 │   └── grid.lua              # Grid state and queries
@@ -203,6 +210,33 @@ src/
     ├── settings.lua          # Settings menu modal
     └── pixel_frames.lua      # Pixel-perfect UI frame utilities
 ```
+
+---
+
+## Coordinate System
+
+The game uses four coordinate spaces:
+
+| Space | Range | Purpose |
+|-------|-------|---------|
+| Screen | 0 → window pixels | Physical mouse position |
+| Game | 0 → 1280x720 | Fixed canvas (letterboxed) |
+| World | Full world size (2800x1800) | Entity positions, camera |
+| Grid | 1-11, 1-15 | Tile cell positions |
+
+**Conversion flow:**
+```
+Screen → Display.screenToGame() → Game
+Game → Camera.screenToWorld() → World
+World → Grid.screenToGrid() → Grid
+```
+
+### Camera System (src/core/camera.lua)
+
+Pan-and-zoom camera for the 2800x1800 world space:
+- Zoom range: 0.5x to 1.5x with smooth interpolation
+- Drag-to-pan with boundary clamping
+- `Camera.push()/pop()` for world-space drawing
 
 ---
 

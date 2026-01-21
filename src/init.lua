@@ -6,6 +6,8 @@ local ConfigValidator = require("src.core.config_validator")
 local EventBus = require("src.core.event_bus")
 local StateMachine = require("src.core.state_machine")
 local Camera = require("src.core.camera")
+local Display = require("src.core.display")
+local EntityManager = require("src.core.entity_manager")
 
 -- Systems
 local Grid = require("src.world.grid")
@@ -25,6 +27,8 @@ local Bloom = require("src.rendering.bloom")
 local FloatingNumbers = require("src.rendering.floating_numbers")
 local TurretConcepts = require("src.rendering.turret_concepts")
 local SkillTreeBackground = require("src.rendering.skill_tree_background")
+local GridRenderer = require("src.rendering.grid_renderer")
+local GameRenderer = require("src.rendering.game_renderer")
 
 -- Entities
 local Tower = require("src.entities.tower")
@@ -46,25 +50,41 @@ local Shortcuts = require("src.ui.shortcuts")
 local SkillTree = require("src.ui.skill_tree")
 local VictoryScreen = require("src.ui.victory_screen")
 local PauseMenu = require("src.ui.pause_menu")
+local MainMenu = require("src.ui.main_menu")
 
 -- Systems (skill tree)
 local SkillTreeData = require("src.systems.skill_tree_data")
+local Upgrades = require("src.systems.upgrades")
+local SpawnCoordinator = require("src.systems.spawn_coordinator")
 
 local Game = {}
 
 -- Game state (private)
+-- Note: Entity collections are now managed by EntityManager
+-- These local references point to EntityManager's collections for easier access
 local state = {
+    -- Entity collections (managed by EntityManager, references for convenience)
+    -- Initialized to empty tables, will be set to EntityManager collections in Game.load()
     towers = {},
     creeps = {},
     projectiles = {},
-    cadavers = {},         -- Dead creep remains on the floor
-    groundEffects = {},    -- Poison clouds, burning ground, etc.
-    chainLightnings = {},  -- Chain lightning visual effects
-    -- New collections for redesigned towers
-    lobbedProjectiles = {},    -- Parabolic arc bombs (void_star)
-    blackholes = {},           -- Pull-effect fields (void_eye)
-    lightningProjectiles = {}, -- Piercing bolts (void_ring)
-    explosionBursts = {},      -- Explosion burst particles
+    cadavers = {},
+    groundEffects = {},
+    chainLightnings = {},
+    lobbedProjectiles = {},
+    blackholes = {},
+    lightningProjectiles = {},
+    explosionBursts = {},
+
+    -- Tower Y-sorting cache (optimization: towers don't move)
+    towersSortedByY = {},
+    towersSortDirty = true,
+
+    -- Combined entity sort cache (towers + creeps + blackholes for Y-ordering)
+    sortedEntities = {},
+    entitiesSortDirty = true,
+
+    -- Game state (not entities)
     flowField = nil,
     gameSpeedIndex = 1,
     selectedTower = nil,   -- Reference to selected placed tower
@@ -74,12 +94,10 @@ local state = {
     void = nil,            -- The Void entity
     exitPortal = nil,      -- The Exit Portal entity (at base)
     autoClickTimer = 0,    -- Timer for auto-clicker
-    -- Tower Y-sorting cache (optimization: towers don't move)
-    towersSortedByY = {},  -- Cached sorted tower list
-    towersSortDirty = true,  -- Flag to rebuild cache when towers change
     -- Debug display
     showDebug = false,  -- Toggle with D key
     debugPath = nil,    -- Cached path for debug visualization
+    showFPS = false,    -- Toggle with F1 key
 }
 
 function Game.load()
@@ -92,6 +110,19 @@ function Game.load()
 
     -- Initialize core systems
     EventBus.init()
+    EntityManager.init()
+
+    -- Set up state references to EntityManager's collections
+    state.towers = EntityManager.getTowers()
+    state.creeps = EntityManager.getCreeps()
+    state.projectiles = EntityManager.getProjectiles()
+    state.cadavers = EntityManager.getCadavers()
+    state.groundEffects = EntityManager.getGroundEffects()
+    state.chainLightnings = EntityManager.getChainLightnings()
+    state.lobbedProjectiles = EntityManager.getLobbedProjectiles()
+    state.blackholes = EntityManager.getBlackholes()
+    state.lightningProjectiles = EntityManager.getLightningProjectiles()
+    state.explosionBursts = EntityManager.getExplosionBursts()
 
     -- Initialize fonts (must be before UI)
     Fonts.init()
@@ -100,13 +131,15 @@ function Game.load()
     Settings.init()
 
     -- Get fixed game dimensions (1280x720 canvas)
-    local gameWidth, gameHeight = Settings.getGameDimensions()
+    local gameWidth, gameHeight = Display.getGameDimensions()
 
     -- Initialize game systems with fixed dimensions
     Grid.init(gameWidth, gameHeight)
     Economy.init()
     Waves.init()
     Combat.init()
+    Upgrades.init()
+    SpawnCoordinator.init()
 
     -- Initialize camera with world dimensions and full canvas viewport
     local worldW, worldH = Grid.getWorldDimensions()
@@ -122,6 +155,7 @@ function Game.load()
     -- Create Void entity (positioned at center of spawn area)
     local voidX, voidY = Grid.getPortalCenter()
     state.void = Void(voidX, voidY)
+    SpawnCoordinator.setVoid(state.void)
 
     -- Center camera on the void portal at game start
     Camera.centerOn(voidX, voidY)
@@ -139,8 +173,9 @@ function Game.load()
     -- Initialize atmosphere effects
     Atmosphere.init()
 
-    -- Initialize post-processing and bloom
+    -- Initialize post-processing, bloom, and game renderer
     PostProcessing.init()
+    GameRenderer.init()
 
     -- Initialize audio system
     Audio.init()
@@ -158,6 +193,9 @@ function Game.load()
     -- Initialize victory screen
     VictoryScreen.init()
 
+    -- Initialize main menu
+    MainMenu.init()
+
     -- Initialize floating numbers system
     FloatingNumbers.init()
 
@@ -167,8 +205,8 @@ function Game.load()
     -- Set up event listeners
     Game.setupEvents()
 
-    -- Start game
-    StateMachine.transition("playing")
+    -- Start at main menu (NOT playing state)
+    MainMenu.show()
 end
 
 -- Recompute debug path when flow field changes (only if debug mode is enabled)
@@ -266,13 +304,7 @@ function Game.setupEvents()
         Economy.loseLife()
     end)
 
-    EventBus.on("spawn_creep", function(data)
-        table.insert(state.creeps, data.creep)
-        -- Register spawn with void for tear effect rendering
-        if state.void then
-            state.void:registerSpawn(data.creep)
-        end
-    end)
+    -- spawn_creep is now handled by SpawnCoordinator
 
     EventBus.on("void_clicked", function(data)
         -- Give gold for clicking
@@ -311,34 +343,16 @@ function Game.setupEvents()
         -- Clear turret base canvas cache (canvas contents can be invalidated on window mode change)
         TurretConcepts.clearCache()
 
-        -- Regenerate skill tree background if visible
+        -- Regenerate skill tree canvases if visible
+        -- Canvases can become invalid/misaligned on fullscreen toggle (especially macOS DPI changes)
         if SkillTree.isVisible() then
             SkillTreeBackground.generate()
+            SkillTree.invalidateCanvases()
         end
     end)
 
-    -- New tower attack spawn events
-    EventBus.on("spawn_lobbed_projectile", function(data)
-        local proj = LobbedProjectile(
-            data.startX, data.startY,
-            data.targetX, data.targetY,
-            data.damage, data.sourceTower
-        )
-        table.insert(state.lobbedProjectiles, proj)
-    end)
-
-    EventBus.on("spawn_blackhole", function(data)
-        local hole = Blackhole(data.x, data.y, data.sourceTower)
-        table.insert(state.blackholes, hole)
-    end)
-
-    EventBus.on("spawn_lightning_bolt", function(data)
-        local bolt = LightningProjectile(
-            data.x, data.y, data.angle,
-            data.damage, data.sourceTower
-        )
-        table.insert(state.lightningProjectiles, bolt)
-    end)
+    -- Tower attack spawn events moved to SpawnCoordinator
+    -- (spawn_lobbed_projectile, spawn_blackhole, spawn_lightning_bolt)
 
     EventBus.on("spawn_test_towers", function(data)
         Game.spawnTestTowers()
@@ -395,6 +409,7 @@ function Game.spawnImmediateEnemy()
     local x, y = Grid.getSpawnPosition(spawnCol)
     local creep = Creep(x, y, creepType)
     table.insert(state.creeps, creep)
+    state.entitiesSortDirty = true
 
     -- Register spawn with void for tear effect rendering
     if state.void then
@@ -512,7 +527,7 @@ end
 function Game.update(dt)
     -- Get mouse position in screen coordinates and game coordinates (scaled for window)
     local screenMx, screenMy = love.mouse.getPosition()
-    local gameMx, gameMy = Settings.screenToGame(screenMx, screenMy)
+    local gameMx, gameMy = Display.screenToGame(screenMx, screenMy)
 
     -- Convert game coordinates to world coordinates through camera
     -- mx, my are world coordinates (where entities live)
@@ -520,6 +535,12 @@ function Game.update(dt)
 
     -- Update settings menu (uses screen coordinates)
     Settings.update(screenMx, screenMy)
+
+    -- Main menu blocks all game updates
+    if MainMenu.isVisible() then
+        MainMenu.update(gameMx, gameMy)
+        return
+    end
 
     -- If settings menu, shortcuts overlay, skill tree, victory screen, or pause menu is open, pause game and show pointer cursor
     if Settings.isVisible() or Shortcuts.isVisible() or SkillTree.isVisible() or VictoryScreen.isVisible() or PauseMenu.isVisible() then
@@ -625,6 +646,7 @@ function Game.update(dt)
         hole:update(dt, state.creeps)
         if hole.dead then
             table.remove(state.blackholes, i)
+            state.entitiesSortDirty = true
         end
     end
 
@@ -711,6 +733,7 @@ function Game.update(dt)
         -- Remove creep when particles are done
         if creep:canRemove() then
             table.remove(state.creeps, i)
+            state.entitiesSortDirty = true
         end
     end
     Profiler.stop("creeps_update")
@@ -809,9 +832,9 @@ end
 
 function Game.draw()
     -- Get scaling info
-    local scale = Settings.getScale()
-    local offsetX, offsetY = Settings.getOffset()
-    local windowW, windowH = Settings.getWindowDimensions()
+    local scale = Display.getScale()
+    local offsetX, offsetY = Display.getOffset()
+    local windowW, windowH = Display.getWindowDimensions()
 
     -- Fill letterbox/pillarbox areas with BLACK (for non-16:9 screens)
     if offsetX > 0 or offsetY > 0 then
@@ -839,7 +862,7 @@ function Game.draw()
 
     -- Get mouse position in game and world coordinates
     local screenMx, screenMy = love.mouse.getPosition()
-    local gameMx, gameMy = Settings.screenToGame(screenMx, screenMy)
+    local gameMx, gameMy = Display.screenToGame(screenMx, screenMy)
     local mx, my = Camera.screenToWorld(gameMx, gameMy)
 
     -- Determine if we should show grid overlay (only when a tower is selected for placement)
@@ -848,7 +871,7 @@ function Game.draw()
     local showGridOverlay = towerSelectedForPlacement and not isOverHUDDraw
 
     -- Draw game world (grid overlay only when placing towers)
-    Grid.draw(showGridOverlay)
+    GridRenderer.draw(showGridOverlay)
 
     -- Draw Void (behind towers and creeps)
     Profiler.start("void_draw")
@@ -906,26 +929,26 @@ function Game.draw()
         effect:draw()
     end
 
-    local sortedEntities = {}
+    -- Rebuild entity list every frame to include newly spawned entities
+    -- (SpawnCoordinator adds entities via EntityManager, which can't set dirty flags)
+    state.sortedEntities = {}
 
-    -- Add blackholes
     for _, hole in ipairs(state.blackholes) do
-        table.insert(sortedEntities, { entity = hole, y = hole.y, type = "blackhole" })
+        table.insert(state.sortedEntities, { entity = hole, type = "blackhole" })
     end
 
-    -- Add pre-sorted towers
     for _, tower in ipairs(state.towersSortedByY) do
-        table.insert(sortedEntities, { entity = tower, y = tower.y, type = "tower" })
+        table.insert(state.sortedEntities, { entity = tower, type = "tower" })
     end
 
-    -- Add creeps
     for _, creep in ipairs(state.creeps) do
-        table.insert(sortedEntities, { entity = creep, y = creep.y, type = "creep" })
+        table.insert(state.sortedEntities, { entity = creep, type = "creep" })
     end
 
-    table.sort(sortedEntities, function(a, b) return a.y < b.y end)
+    -- Sort every frame by current Y position (entities move)
+    table.sort(state.sortedEntities, function(a, b) return a.entity.y < b.entity.y end)
 
-    for _, item in ipairs(sortedEntities) do
+    for _, item in ipairs(state.sortedEntities) do
         item.entity:draw()
     end
     Profiler.stop("entities_draw")
@@ -979,13 +1002,13 @@ function Game.draw()
     if towerSelectedForPlacement and not isOverHUDDraw and not state.selectedTower then
         local canAfford = Economy.canAfford(HUD.getSelectedTowerCost())
         local towerType = HUD.getSelectedTower()
-        Grid.drawHover(mx, my, canAfford, towerType)
+        GridRenderer.drawHover(mx, my, canAfford, towerType)
     end
 
     -- Draw pathfinding debug overlay (in world space)
     if state.showDebug then
-        Grid.drawDebug(state.flowField)
-        Grid.drawGhostPath(state.debugPath)
+        GridRenderer.drawDebug(state.flowField)
+        GridRenderer.drawGhostPath(state.debugPath)
     end
 
     -- Pop camera transform before ending scene rendering
@@ -1030,8 +1053,12 @@ function Game.draw()
     -- Pop the scaling transform before drawing settings and cursor
     love.graphics.pop()
 
-    -- Draw settings menu (modal, in screen space on top of everything except cursor)
+    -- Draw settings menu (full screen scene, in game space)
+    love.graphics.push()
+    love.graphics.translate(offsetX, offsetY)
+    love.graphics.scale(scale, scale)
     Settings.draw()
+    love.graphics.pop()
 
     -- Draw shortcuts overlay (modal, in game space)
     love.graphics.push()
@@ -1061,9 +1088,15 @@ function Game.draw()
     PauseMenu.draw()
     love.graphics.pop()
 
+    -- Draw main menu overlay (modal, in game space)
+    love.graphics.push()
+    love.graphics.translate(offsetX, offsetY)
+    love.graphics.scale(scale, scale)
+    MainMenu.draw()
+    love.graphics.pop()
+
     -- Draw debug overlay (top left, screen space)
     if state.showDebug then
-        local fps = love.timer.getFPS()
         local stats = love.graphics.getStats()
         local memKB = collectgarbage("count")
 
@@ -1076,7 +1109,6 @@ function Game.draw()
 
         -- Build stats text
         local lines = {
-            string.format("FPS: %d", fps),
             string.format("Draw: %d", stats.drawcalls),
             string.format("Mem: %.1fMB", memKB / 1024),
             string.format("Creeps: %d", creepCount),
@@ -1103,6 +1135,25 @@ function Game.draw()
 
         -- Draw bloom debug minimap next to stats
         Bloom.drawDebug(panelWidth + 12, 4)
+    end
+
+    -- Draw FPS counter (bottom right, screen space)
+    if state.showFPS then
+        local fps = love.timer.getFPS()
+        local fpsText = string.format("FPS: %d", fps)
+        love.graphics.setFont(Fonts.get("small"))
+        local textWidth = Fonts.get("small"):getWidth(fpsText)
+        local windowW, windowH = love.graphics.getDimensions()
+        local x = windowW - textWidth - 8
+        local y = windowH - 16
+
+        -- Background
+        love.graphics.setColor(0, 0, 0, 0.6)
+        love.graphics.rectangle("fill", x - 4, y - 2, textWidth + 8, 16)
+
+        -- Text
+        love.graphics.setColor(1, 1, 1, 0.9)
+        love.graphics.print(fpsText, x, y)
     end
 
     -- Draw custom cursor (always on top, in screen space)
@@ -1192,14 +1243,43 @@ function Game.mousepressed(screenX, screenY, button)
     -- Priority 0: Settings menu (if visible) - uses screen coordinates
     if Settings.isVisible() then
         if button == 1 then
+            local wasVisible = Settings.isVisible()
             Settings.handleClick(screenX, screenY)
+            -- If settings was closed (back button), return to main menu if needed
+            if wasVisible and not Settings.isVisible() then
+                if state.settingsReturnTo == "main_menu" then
+                    MainMenu.show()
+                    state.settingsReturnTo = nil
+                end
+            end
         end
         return
     end
 
     -- Convert to game coordinates (scaled for window) and world coordinates (with camera offset)
-    local gameX, gameY = Settings.screenToGame(screenX, screenY)
+    local gameX, gameY = Display.screenToGame(screenX, screenY)
     local worldX, worldY = Camera.screenToWorld(gameX, gameY)
+
+    -- Priority 0.1: Main menu (if visible) - uses game coordinates
+    if MainMenu.isVisible() then
+        if button == 1 then
+            local result = MainMenu.handleClick(gameX, gameY, button)
+            if result then
+                if result.action == "play" then
+                    MainMenu.hide()
+                    -- Game already initialized, just hide menu and start playing
+                elseif result.action == "skills" then
+                    MainMenu.hide()
+                    SkillTree.activate()
+                elseif result.action == "settings" then
+                    MainMenu.hide()
+                    Settings.show()
+                    state.settingsReturnTo = "main_menu"
+                end
+            end
+        end
+        return
+    end
 
     -- Priority 0.25: Pause menu (if visible) - uses game coordinates
     if PauseMenu.isVisible() then
@@ -1242,7 +1322,7 @@ function Game.mousepressed(screenX, screenY, button)
                 Game.restart()
             elseif result.action == "back" then
                 SkillTree.deactivate()
-                VictoryScreen.show()  -- Return to recap screen
+                MainMenu.show()  -- Always return to main menu
             end
         end
         return
@@ -1338,7 +1418,7 @@ end
 
 function Game.mousemoved(screenX, screenY, dx, dy)
     -- Convert to game coordinates and world coordinates
-    local gameX, gameY = Settings.screenToGame(screenX, screenY)
+    local gameX, gameY = Display.screenToGame(screenX, screenY)
     local worldX, worldY = Camera.screenToWorld(gameX, gameY)
 
     -- Update camera drag-to-pan
@@ -1381,7 +1461,7 @@ end
 function Game.mousereleased(screenX, screenY, button)
     -- Handle skill tree panning release
     if SkillTree.isActive() then
-        local x, y = Settings.screenToGame(screenX, screenY)
+        local x, y = Display.screenToGame(screenX, screenY)
         SkillTree.handleMouseReleased(x, y, button)
     end
 
@@ -1407,13 +1487,13 @@ function Game.wheelmoved(x, y)
     end
 
     -- Skip if any modal is open
-    if Settings.isVisible() or Shortcuts.isVisible() or VictoryScreen.isVisible() or PauseMenu.isVisible() then
+    if Settings.isVisible() or Shortcuts.isVisible() or VictoryScreen.isVisible() or PauseMenu.isVisible() or MainMenu.isVisible() then
         return
     end
 
     -- Handle battlefield zoom (only when mouse is in play area, not over HUD)
     local screenMx, screenMy = love.mouse.getPosition()
-    local gameMx, gameMy = Settings.screenToGame(screenMx, screenMy)
+    local gameMx, gameMy = Display.screenToGame(screenMx, screenMy)
 
     if not HUD.isPointInHUD(gameMx, gameMy) then
         local zoomDelta = y * Config.CAMERA.zoomSpeed
@@ -1422,7 +1502,12 @@ function Game.wheelmoved(x, y)
 end
 
 function Game.keypressed(key)
-    -- Toggle shortcuts overlay with ~ (backtick) key
+    -- GLOBAL SHORTCUTS (work everywhere)
+    if key == "b" then
+        Settings.toggleBorderless()
+        return
+    end
+
     if key == "`" then
         Shortcuts.toggle()
         return
@@ -1432,6 +1517,14 @@ function Game.keypressed(key)
     if Shortcuts.isVisible() then
         if key == "escape" then
             Shortcuts.hide()
+        end
+        return
+    end
+
+    -- Handle main menu
+    if MainMenu.isVisible() then
+        if key == "escape" then
+            love.event.quit()
         end
         return
     end
@@ -1449,7 +1542,11 @@ function Game.keypressed(key)
         if SkillTree.handleKeyPressed(key) then
             return
         end
-        -- ESC does nothing in skill tree scene - must click Start Run
+        -- ESC returns to main menu from skill tree
+        if key == "escape" then
+            SkillTree.deactivate()
+            MainMenu.show()
+        end
         return
     end
 
@@ -1463,6 +1560,7 @@ function Game.keypressed(key)
 
     -- Toggle settings menu with P key
     if key == "p" then
+        state.settingsReturnTo = nil  -- Opening from game, not main menu
         Settings.toggle()
         return
     end
@@ -1471,6 +1569,11 @@ function Game.keypressed(key)
     if Settings.isVisible() then
         if key == "escape" then
             Settings.hide()
+            -- Return to main menu if we came from there
+            if state.settingsReturnTo == "main_menu" then
+                MainMenu.show()
+                state.settingsReturnTo = nil
+            end
         end
         return
     end
@@ -1484,7 +1587,12 @@ function Game.keypressed(key)
         ["5"] = "void_star",
     }
     if towerKeys[key] then
-        HUD.selectTower(towerKeys[key])
+        local towerType = towerKeys[key]
+        if HUD.getSelectedTower() == towerType then
+            HUD.selectTower(nil)
+        else
+            HUD.selectTower(towerType)
+        end
         return
     end
 
@@ -1520,12 +1628,6 @@ function Game.keypressed(key)
         return
     end
 
-    -- Borderless toggle
-    if key == "b" then
-        Settings.toggleBorderless()
-        return
-    end
-
     -- Floating numbers style cycle
     if key == "g" then
         local newStyle = FloatingNumbers.cycleStyle()
@@ -1547,6 +1649,12 @@ function Game.keypressed(key)
         if state.showDebug then
             _recomputeDebugPath()
         end
+        return
+    end
+
+    -- FPS counter toggle
+    if key == "f1" then
+        state.showFPS = not state.showFPS
         return
     end
 
@@ -1582,30 +1690,42 @@ function Game.quit()
 end
 
 function Game.restart()
+    -- Clear all event listeners before re-registering (prevents accumulation on restart)
+    EventBus.init()
+
     -- Hide skill tree scene and victory screen (if either is active)
     SkillTree.deactivate()
     VictoryScreen.hide()
 
-    -- Clear all game entities
-    state.towers = {}
-    state.creeps = {}
-    state.projectiles = {}
-    state.cadavers = {}
-    state.groundEffects = {}
-    state.chainLightnings = {}
-    state.lobbedProjectiles = {}
-    state.blackholes = {}
-    state.lightningProjectiles = {}
-    state.explosionBursts = {}
+    -- Clear EntityManager and re-establish references
+    EntityManager.init()
+    state.towers = EntityManager.getTowers()
+    state.creeps = EntityManager.getCreeps()
+    state.projectiles = EntityManager.getProjectiles()
+    state.cadavers = EntityManager.getCadavers()
+    state.groundEffects = EntityManager.getGroundEffects()
+    state.chainLightnings = EntityManager.getChainLightnings()
+    state.lobbedProjectiles = EntityManager.getLobbedProjectiles()
+    state.blackholes = EntityManager.getBlackholes()
+    state.lightningProjectiles = EntityManager.getLightningProjectiles()
+    state.explosionBursts = EntityManager.getExplosionBursts()
+
+    -- Reset sorting caches
     state.towersSortedByY = {}
     state.towersSortDirty = true
+    state.sortedEntities = {}
+    state.entitiesSortDirty = true
     state.selectedTower = nil
     state.hoveredTower = nil
     state.gameSpeedIndex = 1
     state.autoClickTimer = 0
 
+    -- Re-register event handlers (SpawnCoordinator needs to listen for spawn events)
+    SpawnCoordinator.init()
+    Game.setupEvents()
+
     -- Get fixed game dimensions (1280x720 canvas)
-    local gameWidth, gameHeight = Settings.getGameDimensions()
+    local gameWidth, gameHeight = Display.getGameDimensions()
 
     -- Reset grid with fixed dimensions
     Grid.init(gameWidth, gameHeight)
@@ -1625,6 +1745,7 @@ function Game.restart()
     -- Reset Void entity
     local voidX, voidY = Grid.getPortalCenter()
     state.void = Void(voidX, voidY)
+    SpawnCoordinator.setVoid(state.void)
 
     -- Center camera on void portal
     Camera.centerOn(voidX, voidY)

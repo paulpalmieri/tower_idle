@@ -2,7 +2,8 @@
 -- Bloom effect: extracts emissive sources, blurs them, and composites
 
 local Config = require("src.config")
-local Settings = require("src.ui.settings")
+local Display = require("src.core.display")
+local EventBus = require("src.core.event_bus")
 local Camera = require("src.core.camera")
 
 local Bloom = {}
@@ -21,7 +22,7 @@ local state = {
 
 function Bloom.init()
     -- Half resolution for glow (performance optimization)
-    local gameWidth, gameHeight = Settings.getGameDimensions()
+    local gameWidth, gameHeight = Display.getGameDimensions()
     state.glowWidth = math.floor(gameWidth / 2)
     state.glowHeight = math.floor(gameHeight / 2)
 
@@ -44,10 +45,17 @@ function Bloom.init()
     if Config.POST_PROCESSING and Config.POST_PROCESSING.bloom then
         state.enabled = Config.POST_PROCESSING.bloom.enabled
     end
+
+    -- Subscribe to visual setting changes (breaks circular dependency with Settings)
+    EventBus.on("visual_setting_changed", function(data)
+        if data.setting == "bloom" then
+            state.enabled = data.enabled
+        end
+    end)
 end
 
 function Bloom.resize()
-    local gameWidth, gameHeight = Settings.getGameDimensions()
+    local gameWidth, gameHeight = Display.getGameDimensions()
     state.glowWidth = math.floor(gameWidth / 2)
     state.glowHeight = math.floor(gameHeight / 2)
 

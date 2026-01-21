@@ -144,16 +144,15 @@ local NODES = {
     -- Tier 5: Keystone
     {
         id = "void_bolt_keystone",
-        name = "Tesla Coil",
-        description = "Infinite chain in range\n-30% base damage",
+        name = "Lightning Spear",
+        description = "Bolts pierce all enemies\n-15% damage per pierce",
         branch = "void_bolt",
         tier = 5,
         position = { side = "center" },
         cost = { crystals = 1 },
         requires = { "void_bolt_t4" },
         effects = {
-            { type = "tower_flag", tower = "void_bolt", flag = "infinite_chain", value = true },
-            { type = "tower_stat", tower = "void_bolt", stat = "damage", op = "multiply", value = 0.70 }
+            { type = "tower_flag", tower = "void_bolt", flag = "pierce", value = true },
         },
         isKeystone = true,
     },

@@ -2,9 +2,9 @@
 -- Tower selection menu UI component with stats, upgrade, and sell buttons
 
 local Config = require("src.config")
+local Display = require("src.core.display")
 local Fonts = require("src.rendering.fonts")
 local PixelFrames = require("src.ui.pixel_frames")
-local Settings = require("src.ui.settings")
 local Camera = require("src.core.camera")
 
 local Tooltip = {}
@@ -23,8 +23,8 @@ local state = {
 local function _calculateTooltipPosition(tower)
     local cfg = Config.UI.tooltip
     -- Use panel X position for clamping (tooltip shouldn't overlap panel)
-    local screenWidth = Settings.getPanelX()
-    local _, screenHeight = Settings.getGameDimensions()
+    local screenWidth = Display.getPanelX()
+    local _, screenHeight = Display.getGameDimensions()
 
     -- Calculate total height:
     -- Header (name + level)
