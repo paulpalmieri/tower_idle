@@ -465,7 +465,7 @@ Config.RED_BOSS = {
 
 -- Visual configuration for the Void Portal (circular, creep-style rendering)
 Config.VOID_PORTAL = {
-    baseSize = 84,              -- 3x creep size doubled (42 * 2)
+    baseSize = 38,              -- Match player portal size
     maxSize = 240,              -- Maximum growth doubled (120 * 2)
     topPadding = 40,            -- Padding from top of spawn area doubled (20 * 2)
     pixelSize = 3,              -- Same as exit portal
