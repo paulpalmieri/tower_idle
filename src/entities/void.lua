@@ -66,7 +66,9 @@ function Void:generatePixels()
     local cfg = Config.VOID_PORTAL
 
     -- Create a grid of pixels within an expanded area (to allow membrane breathing)
-    local expandedRadius = radius * 1.3
+    -- Must account for maximum combined scale: hover(1.05) * click(1.2) * pulse(1.15) ≈ 1.45
+    -- Plus wobble amount, so use 1.6 to be safe
+    local expandedRadius = radius * 1.6
     local gridSize = math.ceil(expandedRadius * 2 / ps)
     local halfGrid = gridSize / 2
 
@@ -97,7 +99,8 @@ function Void:generatePixels()
             ) * math.pi * 2
 
             -- Only include pixels that could potentially be visible
-            local maxEdgeRadius = radius * (0.7 + 0.5 + cfg.wobbleAmount * 0.5)
+            -- Account for max scale (1.45x) and wobble
+            local maxEdgeRadius = radius * 1.6
             if dist < maxEdgeRadius then
                 local distNorm = dist / radius
                 table.insert(self.pixels, {

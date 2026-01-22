@@ -57,11 +57,11 @@ function PostProcessing.endFrame()
 end
 
 -- Collect glow sources from game entities and render bloom
-function PostProcessing.renderBloom(void, creeps, towers, projectiles, groundEffects, lobbedProjectiles, lightningProjectiles, blackholes)
+function PostProcessing.renderBloom(spawnPortals, creeps, towers, projectiles, groundEffects, lobbedProjectiles, lightningProjectiles, blackholes)
     if not state.enabled then return end
     if not Bloom.isEnabled() then return end
 
-    Bloom.render(void, creeps, towers, projectiles, groundEffects, lobbedProjectiles, lightningProjectiles, blackholes, state.time)
+    Bloom.render(spawnPortals, creeps, towers, projectiles, groundEffects, lobbedProjectiles, lightningProjectiles, blackholes, state.time)
 end
 
 -- Draw final composited result

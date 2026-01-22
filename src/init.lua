@@ -32,9 +32,11 @@ local GameRenderer = require("src.rendering.game_renderer")
 
 -- Entities
 local Tower = require("src.entities.tower")
-local Void = require("src.entities.void")
+local SpawnPortal = require("src.entities.spawn_portal")
 local Creep = require("src.entities.creep")
-local ExitPortal = require("src.entities.exit_portal")
+
+-- Anger system
+local Anger = require("src.systems.anger")
 
 -- New projectile/effect entities
 local LobbedProjectile = require("src.entities.lobbed_projectile")
@@ -91,8 +93,7 @@ local state = {
     hoveredTower = nil,    -- Reference to tower under mouse cursor
     isDragging = false,    -- Drag-to-place active
     lastPlacedCell = nil,  -- {gridX, gridY} to avoid double-placing
-    void = nil,            -- The Void entity
-    exitPortal = nil,      -- The Exit Portal entity (at base)
+    spawnPortals = {},     -- Array of 4 SpawnPortal entities
     autoClickTimer = 0,    -- Timer for auto-clicker
     -- Debug display
     showDebug = false,  -- Toggle with D key
@@ -152,17 +153,26 @@ function Game.load()
     state.flowField = Pathfinding.computeFlowField(Grid)
     -- Debug path is computed lazily when debug mode is enabled
 
-    -- Create Void entity (positioned at center of spawn area)
-    local voidX, voidY = Grid.getPortalCenter()
-    state.void = Void(voidX, voidY)
-    SpawnCoordinator.setVoid(state.void)
+    -- Initialize anger system
+    Anger.init()
 
-    -- Center camera on the void portal at game start
-    Camera.centerOn(voidX, voidY)
+    -- Create 4 spawn portals at center in 2x2 pattern
+    state.spawnPortals = {}
+    local portalPositions = Grid.getPortalGridPositions()
+    local activationWaves = Config.SPAWN_PORTALS.activationWaves
+    for i, pos in ipairs(portalPositions) do
+        local portal = SpawnPortal(pos[1], pos[2], i)
+        -- Activate portal if its activation wave is 1 (start active)
+        if activationWaves[i] == 1 then
+            portal:activate()
+        end
+        table.insert(state.spawnPortals, portal)
+    end
+    SpawnCoordinator.setSpawnPortals(state.spawnPortals)
 
-    -- Create Exit Portal entity (positioned at center of base zone)
-    local exitX, exitY = Grid.getExitPortalCenter()
-    state.exitPortal = ExitPortal(exitX, exitY)
+    -- Center camera on the grid center (where portals are)
+    local worldW, worldH = Grid.getWorldDimensions()
+    Camera.centerOn(worldW / 2, worldH / 2)
 
     -- Initialize UI (minimalistic HUD with bottom bar and top-right info)
     HUD.init(gameWidth, gameHeight)
@@ -205,15 +215,21 @@ function Game.load()
     -- Set up event listeners
     Game.setupEvents()
 
-    -- Start at main menu (NOT playing state)
-    MainMenu.show()
+    -- Start at main menu (unless dev skip is enabled)
+    if not Config.DEV_SKIP_MENU then
+        MainMenu.show()
+    end
 end
 
 -- Recompute debug path when flow field changes (only if debug mode is enabled)
 local function _recomputeDebugPath()
     if state.showDebug then
-        local centerCol = math.ceil(Grid.getCols() / 2)
-        state.debugPath = Pathfinding.findPathToBase(Grid, centerCol, 1)
+        -- Get first portal position and find path to nearest edge
+        local portalPositions = Grid.getPortalGridPositions()
+        if portalPositions and portalPositions[1] then
+            local startX, startY = portalPositions[1][1], portalPositions[1][2]
+            state.debugPath = Pathfinding.findPathToEdge(Grid, startX, startY)
+        end
     end
 end
 
@@ -306,17 +322,28 @@ function Game.setupEvents()
 
     -- spawn_creep is now handled by SpawnCoordinator
 
-    EventBus.on("void_clicked", function(data)
-        -- Give gold for clicking
-        Economy.voidClicked(data.income)
-        -- Track stats for recap screen
-        Economy.recordGoldEarned(data.income)
-
-        -- Spawn one enemy immediately
-        Game.spawnImmediateEnemy()
+    -- Portal clicked - increase shared anger (no gold income)
+    EventBus.on("portal_clicked", function(data)
+        Anger.increase(Config.SPAWN_PORTALS.angerPerClick or 5)
 
         -- Update waves system with current tier
-        Waves.setTier(data.tier)
+        Waves.setTier(Anger.getTier())
+
+        -- Spawn one enemy immediately from the clicked portal
+        Game.spawnImmediateEnemy(data.index)
+    end)
+
+    -- Activate additional portals as waves progress
+    EventBus.on("activate_portal", function(data)
+        local portal = state.spawnPortals[data.index]
+        if portal then
+            portal:activate()
+        end
+    end)
+
+    -- Anger tier changed - update waves system
+    EventBus.on("anger_tier_changed", function(data)
+        Waves.setTier(data.newTier)
     end)
 
     EventBus.on("spawn_red_bosses", function(data)
@@ -391,30 +418,43 @@ function Game.getSpeedLabel()
     return Config.GAME_SPEED_LABELS[state.gameSpeedIndex]
 end
 
--- Click the Void (used by both manual clicks and auto-clicker)
-function Game.clickVoid()
-    if state.void then
-        state.void:click()
+-- Click a random active portal (used by auto-clicker)
+function Game.clickRandomPortal()
+    local activePortals = {}
+    for _, portal in ipairs(state.spawnPortals) do
+        if portal.isActive then
+            table.insert(activePortals, portal)
+        end
+    end
+    if #activePortals > 0 then
+        local portal = activePortals[math.random(#activePortals)]
+        portal:click()
     end
 end
 
--- Spawn a single enemy immediately (from Void click)
-function Game.spawnImmediateEnemy()
+-- Spawn a single enemy immediately (from portal click)
+function Game.spawnImmediateEnemy(portalIndex)
+    -- Default to portal 1 if not specified
+    portalIndex = portalIndex or 1
+    local portal = state.spawnPortals[portalIndex]
+    if not portal then return end
+
     -- All enemies are now Void Spawns
     local creepType = "voidSpawn"
 
-    -- Spawn from random column on spawn row (same as wave spawns)
-    local cols = Grid.getCols()
-    local spawnCol = math.random(1, cols)
-    local x, y = Grid.getSpawnPosition(spawnCol)
-    local creep = Creep(x, y, creepType)
+    -- Get spawn position (random cell within 3x3 area around portal)
+    local x, y = Grid.getSpawnPosition(portalIndex)
+
+    -- Calculate stat multipliers based on anger
+    local healthMultiplier = Anger.getHpMultiplier()
+    local speedMultiplier = Anger.getSpeedMultiplier()
+
+    local creep = Creep(x, y, creepType, healthMultiplier, speedMultiplier)
     table.insert(state.creeps, creep)
     state.entitiesSortDirty = true
 
-    -- Register spawn with void for tear effect rendering
-    if state.void then
-        state.void:registerSpawn(creep)
-    end
+    -- Register spawn with portal for tear effect rendering
+    portal:registerSpawn(creep)
 end
 
 -- Procedural noise for cadaver rendering (simplified from creep)
@@ -573,23 +613,18 @@ function Game.update(dt)
     -- Apply time scale
     dt = dt * Game.getTimeScale()
 
-    -- Update Void
-    if state.void then
-        state.void:update(dt)
+    -- Update spawn portals
+    for _, portal in ipairs(state.spawnPortals) do
+        portal:update(dt)
     end
 
-    -- Update Exit Portal
-    if state.exitPortal then
-        state.exitPortal:update(dt)
-    end
-
-    -- Handle auto-clicker
+    -- Handle auto-clicker (clicks a random active portal)
     local autoClickInterval = HUD.getAutoClickInterval()
     if autoClickInterval then
         state.autoClickTimer = state.autoClickTimer + dt
         if state.autoClickTimer >= autoClickInterval then
             state.autoClickTimer = state.autoClickTimer - autoClickInterval
-            Game.clickVoid()
+            Game.clickRandomPortal()
         end
     end
 
@@ -692,12 +727,12 @@ function Game.update(dt)
         local creep = state.creeps[i]
         creep:update(dt, Grid, state.flowField)
 
-        -- Check if creep crossed the exit line (horizontal line through exit portal center)
+        -- Check if creep reached an edge cell (any edge of the grid)
         if not creep.dead and not creep:isExiting() and not creep:isSpawning() then
-            if state.exitPortal and creep.y >= state.exitPortal.y then
-                -- Start exit animation
-                creep:startExitAnimation(state.exitPortal.x, state.exitPortal.y)
-                state.exitPortal:registerExit(creep)
+            local gridX, gridY = Grid.screenToGrid(creep.x, creep.y)
+            if Grid.isEdgeCell(gridX, gridY) then
+                -- Start exit animation at the edge
+                creep:startExitAnimation(creep.x, creep.y)
             end
         end
 
@@ -797,18 +832,29 @@ function Game.update(dt)
     -- Check if hovering over tooltip button (uses game coords for tooltip position)
     elseif Tooltip.isHoveringButton(gameMx, gameMy) then
         isClickable = true
-    -- Check if hovering over void (world coords)
-    elseif state.void and state.void:isPointInside(mx, my) then
-        isClickable = true
-        state.void:setHovered(true)
-    -- Check if hovering over a placed tower
-    elseif state.hoveredTower then
-        isClickable = true
-    end
+    -- Check if hovering over any active spawn portal (world coords)
+    else
+        local hoveredPortal = nil
+        for _, portal in ipairs(state.spawnPortals) do
+            if portal.isActive and portal:isPointInside(mx, my) then
+                hoveredPortal = portal
+                break
+            end
+        end
+        if hoveredPortal then
+            isClickable = true
+            hoveredPortal:setHovered(true)
+        elseif state.hoveredTower then
+            -- Check if hovering over a placed tower
+            isClickable = true
+        end
 
-    -- Clear void hover state when not hovering
-    if state.void and not state.void:isPointInside(mx, my) then
-        state.void:setHovered(false)
+        -- Clear portal hover states
+        for _, portal in ipairs(state.spawnPortals) do
+            if portal ~= hoveredPortal then
+                portal:setHovered(false)
+            end
+        end
     end
 
     -- Update cursor based on state
@@ -873,20 +919,12 @@ function Game.draw()
     -- Draw game world (grid overlay only when placing towers)
     GridRenderer.draw(showGridOverlay)
 
-    -- Draw Void (behind towers and creeps)
-    Profiler.start("void_draw")
-    if state.void then
-        state.void:drawSpewParticles()  -- Draw outward spewing particles (behind portal)
-        state.void:draw()
-        state.void:drawTears()  -- Draw spawn tears on top of void base
-        state.void:drawSpawnParticles()  -- Draw spark particles
+    -- Draw spawn portals (behind towers and creeps)
+    Profiler.start("portals_draw")
+    for _, portal in ipairs(state.spawnPortals) do
+        portal:draw()
     end
-    Profiler.stop("void_draw")
-
-    -- Draw Exit Portal (behind towers and creeps, at base zone)
-    if state.exitPortal then
-        state.exitPortal:draw()
-    end
+    Profiler.stop("portals_draw")
 
     -- Draw cadavers (dead creep remains on floor, behind everything else)
     Profiler.start("cadavers_draw")
@@ -953,11 +991,7 @@ function Game.draw()
     end
     Profiler.stop("entities_draw")
 
-    -- Draw Exit Portal particles and breach effects (on top of creeps)
-    if state.exitPortal then
-        state.exitPortal:drawExitParticles()
-        state.exitPortal:drawBreachEffects()
-    end
+    -- (Exit portal effects removed - creeps now escape at edges)
 
     for _, proj in ipairs(state.projectiles) do
         proj:draw()
@@ -1020,7 +1054,7 @@ function Game.draw()
     -- Render bloom effect (extract glow sources and blur)
     Profiler.start("bloom_render")
     PostProcessing.renderBloom(
-        state.void,
+        state.spawnPortals,
         state.creeps,
         state.towers,
         state.projectiles,
@@ -1044,7 +1078,7 @@ function Game.draw()
 
     -- Draw UI (minimalistic HUD with bottom bar and top-right info)
     Profiler.start("hud_draw")
-    HUD.draw(Economy, state.void, Waves, Game.getSpeedLabel())
+    HUD.draw(Economy, Anger, Waves, Game.getSpeedLabel())
     Profiler.stop("hud_draw")
 
     -- Draw tooltip on top
@@ -1374,11 +1408,13 @@ function Game.mousepressed(screenX, screenY, button)
         return
     end
 
-    -- Priority 3: Void clicks (before tower selection) - void is in world space
-    if state.void and state.void:isPointInside(worldX, worldY) then
-        _selectTower(nil)
-        Game.clickVoid()
-        return
+    -- Priority 3: Spawn portal clicks (before tower selection) - portals are in world space
+    for _, portal in ipairs(state.spawnPortals) do
+        if portal.isActive and portal:isPointInside(worldX, worldY) then
+            _selectTower(nil)
+            portal:click()  -- Emits portal_clicked event
+            return
+        end
     end
 
     -- Priority 4: Click on placed tower (select/deselect) - towers are in world space
@@ -1742,17 +1778,26 @@ function Game.restart()
     state.flowField = Pathfinding.computeFlowField(Grid)
     _recomputeDebugPath()
 
-    -- Reset Void entity
-    local voidX, voidY = Grid.getPortalCenter()
-    state.void = Void(voidX, voidY)
-    SpawnCoordinator.setVoid(state.void)
+    -- Reset anger system
+    Anger.init()
 
-    -- Center camera on void portal
-    Camera.centerOn(voidX, voidY)
+    -- Create 4 spawn portals at center in 2x2 pattern
+    state.spawnPortals = {}
+    local portalPositions = Grid.getPortalGridPositions()
+    local activationWaves = Config.SPAWN_PORTALS.activationWaves
+    for i, pos in ipairs(portalPositions) do
+        local portal = SpawnPortal(pos[1], pos[2], i)
+        -- Activate portal if its activation wave is 1 (start active)
+        if activationWaves[i] == 1 then
+            portal:activate()
+        end
+        table.insert(state.spawnPortals, portal)
+    end
+    SpawnCoordinator.setSpawnPortals(state.spawnPortals)
 
-    -- Reset Exit Portal
-    local exitX, exitY = Grid.getExitPortalCenter()
-    state.exitPortal = ExitPortal(exitX, exitY)
+    -- Center camera on grid center
+    local worldW, worldH = Grid.getWorldDimensions()
+    Camera.centerOn(worldW / 2, worldH / 2)
 
     -- Reset UI (minimalistic HUD)
     HUD.init(gameWidth, gameHeight)

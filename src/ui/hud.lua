@@ -608,18 +608,18 @@ local function _drawFilledOrb(cx, cy, radius, fillPercent, liquidColor, glowColo
 end
 
 -- Draw the anger circle (top right)
-local function _drawAngerCircle(voidEntity)
-    if not voidEntity then return end
+local function _drawAngerCircle(angerSystem)
+    if not angerSystem then return end
 
     local padding = 20
     local radius = state.angerCircleSize / 2
     local cx = state.screenWidth - padding - radius
     local cy = padding + radius
 
-    local clickCount = voidEntity:getClickCount()
-    local maxClicks = voidEntity:getMaxClicks()
-    local fillPercent = clickCount / maxClicks
-    local tier = voidEntity:getTier()
+    local angerLevel = angerSystem.getLevel()
+    local maxAnger = angerSystem.getMaxLevel()
+    local fillPercent = angerLevel / maxAnger
+    local tier = angerSystem.getTier()
 
     -- Color based on tier
     local liquidColor, glowColor
@@ -661,7 +661,7 @@ local function _drawAngerCircle(voidEntity)
     love.graphics.printf("ANGER", cx - radius, cy + radius + 8, radius * 2, "center")
 
     love.graphics.setColor(Config.COLORS.textPrimary)
-    love.graphics.printf(clickCount .. "/" .. maxClicks, cx - radius, cy + radius + 22, radius * 2, "center")
+    love.graphics.printf(angerLevel .. "/" .. maxAnger, cx - radius, cy + radius + 22, radius * 2, "center")
 end
 
 -- Draw wave info (below anger circle)
@@ -852,7 +852,7 @@ local function _drawTowerContainer()
     -- No container drawn
 end
 
-function HUD.draw(economy, voidEntity, waves, speedLabel)
+function HUD.draw(economy, angerSystem, waves, speedLabel)
     -- Gold display (above tower row)
     if economy then
         _drawGoldDisplay(economy)
@@ -882,7 +882,7 @@ function HUD.draw(economy, voidEntity, waves, speedLabel)
     end
 
     -- Top-right: Anger circle
-    _drawAngerCircle(voidEntity)
+    _drawAngerCircle(angerSystem)
 
     -- Top-right: Wave info
     _drawWaveInfo(waves)

@@ -197,27 +197,33 @@ function Creep:generateSpiderPixels()
     local bodyHeight = bodySize * cfg.body.height
 
     -- Generate body pixels (elongated ellipse - rift shape)
+    -- Using integer grid positions for pixel-perfect rendering
     local expandedH = bodyHeight * 1.3
     local expandedW = bodyWidth * 1.3
-    local gridH = math.ceil(expandedH * 2 / ps)
-    local gridW = math.ceil(expandedW * 2 / ps)
+    local gridH = ceil(expandedH * 2 / ps)
+    local gridW = ceil(expandedW * 2 / ps)
 
     for py = 0, gridH - 1 do
         for px = 0, gridW - 1 do
-            local relX = (px - gridW / 2 + 0.5) * ps
-            local relY = (py - gridH / 2 + 0.5) * ps
+            -- Grid position relative to body center (in pixel units, integers)
+            local gridX = px - floor(gridW / 2)
+            local gridY = py - floor(gridH / 2)
+
+            -- Use center of pixel for shape test
+            local testX = (gridX + 0.5) * ps
+            local testY = (gridY + 0.5) * ps
 
             -- Ellipse distance (normalized so edge = 1)
-            local normX = relX / bodyWidth
-            local normY = relY / bodyHeight
-            local ellipseDist = math.sqrt(normX * normX + normY * normY)
+            local normX = testX / bodyWidth
+            local normY = testY / bodyHeight
+            local ellipseDist = sqrt(normX * normX + normY * normY)
 
             if ellipseDist < 1.3 then
-                local angle = math.atan2(relY, relX)
+                local angle = atan2(testY, testX)
 
                 local baseEdgeNoise = Procedural.fbm(
-                    math.cos(angle) * cfg.distortionFrequency,
-                    math.sin(angle) * cfg.distortionFrequency,
+                    cos(angle) * cfg.distortionFrequency,
+                    sin(angle) * cfg.distortionFrequency,
                     self.seed,
                     cfg.octaves
                 )
@@ -228,11 +234,15 @@ function Creep:generateSpiderPixels()
                     0,
                     self.seed + 500,
                     2
-                ) * math.pi * 2
+                ) * pi * 2
 
                 table.insert(self.bodyPixels, {
-                    relX = relX,
-                    relY = relY,
+                    -- Grid offset from body center (integer pixel units)
+                    gridX = gridX,
+                    gridY = gridY,
+                    -- World-relative position (for cadaver compatibility)
+                    relX = testX,
+                    relY = testY,
                     px = px,
                     py = py,
                     angle = angle,
@@ -247,49 +257,61 @@ function Creep:generateSpiderPixels()
         end
     end
 
-    -- Generate leg pixels (4 floating void shards) - fixed medium legs
+    -- Generate leg pixels (4 void shard chunks) - pixel-perfect grid placement
+    -- Each leg is a pre-generated chunk that moves as a unit (no subpixel positions)
     local legLen = bodySize * cfg.legs.length
     local legWidth = legLen * cfg.legs.width
     local legAngle = cfg.legs.angle  -- Fixed angle for all variants
     local legGap = bodySize * cfg.legs.gap
 
+    -- Snap leg anchor positions to pixel grid
+    local legGapSnapped = floor(legGap / ps + 0.5) * ps
+    local legOffsetY = floor(bodyHeight * 0.4 / ps + 0.5) * ps
+
     -- Leg positions:  \ | /   (legs angle outward from body)
     --                 \ | /
+    -- ox/oy are now snapped to pixel grid
     local legDefs = {
-        {ox = -legGap, oy = -bodyHeight * 0.4, angle = legAngle},   -- front-left \
-        {ox = legGap,  oy = -bodyHeight * 0.4, angle = -legAngle},  -- front-right /
-        {ox = -legGap, oy = bodyHeight * 0.4,  angle = legAngle},   -- back-left \
-        {ox = legGap,  oy = bodyHeight * 0.4,  angle = -legAngle},  -- back-right /
+        {ox = -legGapSnapped, oy = -legOffsetY, angle = legAngle},   -- front-left \
+        {ox = legGapSnapped,  oy = -legOffsetY, angle = -legAngle},  -- front-right /
+        {ox = -legGapSnapped, oy = legOffsetY,  angle = legAngle},   -- back-left \
+        {ox = legGapSnapped,  oy = legOffsetY,  angle = -legAngle},  -- back-right /
     }
 
     for legIdx, legDef in ipairs(legDefs) do
         -- Generate shard shape (elongated void chunk)
-        local shardH = legLen
-        local shardW = legWidth
-        local gridLegH = math.ceil(shardH * 1.4 / ps)
-        local gridLegW = math.ceil(shardW * 1.4 / ps)
+        -- Grid dimensions in whole pixels
+        local gridLegH = ceil(legLen * 1.4 / ps)
+        local gridLegW = ceil(legWidth * 1.4 / ps)
+
+        -- Pre-compute rotation matrix
+        local cosA = cos(legDef.angle)
+        local sinA = sin(legDef.angle)
 
         for py = 0, gridLegH - 1 do
             for px = 0, gridLegW - 1 do
-                local localX = (px - gridLegW / 2 + 0.5) * ps
-                local localY = (py - gridLegH / 2 + 0.5) * ps
+                -- Grid position relative to leg center (in pixel units, integers)
+                local gridX = px - floor(gridLegW / 2)
+                local gridY = py - floor(gridLegH / 2)
 
-                -- Shard shape: elongated ellipse
-                local normX = localX / (shardW * 0.5)
-                local normY = localY / (shardH * 0.5)
-                local shardDist = math.sqrt(normX * normX + normY * normY)
+                -- Check if this grid cell is within the shard shape
+                -- Use center of pixel for shape test
+                local testX = (gridX + 0.5) * ps
+                local testY = (gridY + 0.5) * ps
+                local normX = testX / (legWidth * 0.5)
+                local normY = testY / (legLen * 0.5)
+                local shardDist = sqrt(normX * normX + normY * normY)
 
                 if shardDist < 1.2 then
-                    -- Rotate by leg angle
-                    local cosA = math.cos(legDef.angle)
-                    local sinA = math.sin(legDef.angle)
-                    local rotX = localX * cosA - localY * sinA
-                    local rotY = localX * sinA + localY * cosA
+                    -- Apply rotation to get final grid offset (still in pixel units)
+                    -- Rotate the grid offset, then snap to nearest pixel
+                    local rotGridX = floor(gridX * cosA - gridY * sinA + 0.5)
+                    local rotGridY = floor(gridX * sinA + gridY * cosA + 0.5)
 
-                    local angle = math.atan2(localY, localX)
+                    local angle = atan2(testY, testX)
                     local baseEdgeNoise = Procedural.fbm(
-                        math.cos(angle) * cfg.distortionFrequency,
-                        math.sin(angle) * cfg.distortionFrequency,
+                        cos(angle) * cfg.distortionFrequency,
+                        sin(angle) * cfg.distortionFrequency,
                         self.seed + legIdx * 100,
                         cfg.octaves
                     )
@@ -300,14 +322,17 @@ function Creep:generateSpiderPixels()
                         0,
                         self.seed + legIdx * 100 + 500,
                         2
-                    ) * math.pi * 2
+                    ) * pi * 2
 
                     table.insert(self.legPixels, {
                         legIdx = legIdx,
+                        -- Leg anchor (already snapped to pixel grid)
                         ox = legDef.ox,
                         oy = legDef.oy,
-                        localX = rotX,
-                        localY = rotY,
+                        -- Grid offset within leg (integer pixel units)
+                        gridX = rotGridX,
+                        gridY = rotGridY,
+                        -- For sparkle hash
                         px = px + legIdx * 20,
                         py = py,
                         angle = angle,
@@ -385,34 +410,28 @@ function Creep:getEmergenceProgress()
     end
 end
 
--- Start the exit animation (called when creep reaches base)
-function Creep:startExitAnimation(portalX, portalY)
-    self.exitPhase = "sucking"
+-- Start the exit animation (called when creep reaches edge)
+-- For edge-based escape, just fade out in place (no portal pull)
+function Creep:startExitAnimation(edgeX, edgeY)
+    self.exitPhase = "fading"
     self.exitTimer = 0
     self.exitX = self.x
     self.exitY = self.y
-    self.exitPortalX = portalX
-    self.exitPortalY = portalY
+    -- Store edge position (for potential rift effect)
+    self.exitPortalX = edgeX or self.x
+    self.exitPortalY = edgeY or self.y
 end
 
--- Update exit animation - simple suck into void
+-- Update exit animation - simple fade out at edge
 function Creep:updateExitAnimation(dt)
-    local suckDuration = 0.3  -- Quick suck animation
+    local fadeDuration = 0.3  -- Quick fade animation
 
     self.exitTimer = self.exitTimer + dt
 
-    if self.exitPhase == "sucking" then
-        -- Pull creep toward portal center
-        local progress = math.min(1, self.exitTimer / suckDuration)
-        local eased = _easeOutQuad(progress)
-
-        -- Move toward portal center
-        self.x = self.exitX + (self.exitPortalX - self.exitX) * eased
-        self.y = self.exitY + (self.exitPortalY - self.exitY) * eased
-
-        if self.exitTimer >= suckDuration then
+    if self.exitPhase == "fading" then
+        if self.exitTimer >= fadeDuration then
             self.exitPhase = "consumed"
-            self.reachedBase = true
+            self.reachedBase = true  -- Keep this flag name for event compatibility
             self.dead = true
         end
     end
@@ -430,9 +449,9 @@ end
 
 -- Get devouring progress (0-1) for visual fade/shrink during exit
 function Creep:getDevouringProgress()
-    if self.exitPhase ~= "sucking" then return 0 end
-    local suckDuration = 0.3
-    return _easeOutQuad(math.min(1, self.exitTimer / suckDuration))
+    if self.exitPhase ~= "fading" then return 0 end
+    local fadeDuration = 0.3
+    return _easeOutQuad(math.min(1, self.exitTimer / fadeDuration))
 end
 
 function Creep:update(dt, grid, flowField)
@@ -509,20 +528,16 @@ function Creep:update(dt, grid, flowField)
 
     -- Get current grid position
     local gridX, gridY = grid.screenToGrid(self.x, self.y)
-    local baseRow = grid.getBaseRow()
-    local gridBottom = grid.getGridBottom()
+    local cols = grid.getCols()
+    local rows = grid.getRows()
 
     -- Get flow direction for current cell
     local flow = flowField[gridY] and flowField[gridY][gridX]
 
     local targetX, targetY
 
-    -- Check if we're at or past the base row - move straight down toward exit
-    if gridY >= baseRow or self.y >= gridBottom then
-        -- At base row or below grid: move straight down
-        targetX = self.x
-        targetY = self.y + 100  -- Just go down
-    elseif flow and (flow.dx ~= 0 or flow.dy ~= 0) then
+    -- Follow flow field toward nearest edge
+    if flow and (flow.dx ~= 0 or flow.dy ~= 0) then
         -- Follow flow field - calculate target cell center
         local targetGridX = gridX + flow.dx
         local targetGridY = gridY + flow.dy
@@ -538,48 +553,15 @@ function Creep:update(dt, grid, flowField)
             -- Target is blocked, stay in current cell center (flow field will be recomputed)
             targetX, targetY = grid.gridToScreen(gridX, gridY)
         end
-    elseif gridY < 1 then
-        -- Above grid (row 0 or buffer): use flow field for row 0 if available
-        -- Otherwise find valid entry on row 1
-        local cols = grid.getCols()
-
-        -- Clamp gridX to valid column range (it's calculated from screenToGrid above)
-        local currentGridX = max(1, min(cols, gridX))
-
-        -- First try to use flow field at row 0 (spawn buffer)
-        local flow0 = flowField[0] and flowField[0][currentGridX]
-        if flow0 and (flow0.dx ~= 0 or flow0.dy ~= 0) then
-            -- Follow flow field at row 0
-            local targetGridX = currentGridX + flow0.dx
-            local targetGridY = 0 + flow0.dy
-            targetX, targetY = grid.gridToScreen(targetGridX, max(1, targetGridY))
-        else
-            -- Fallback: find nearest column on row 1 with valid flow field entry
-            local bestCol = nil
-            local bestDist = math.huge
-
-            for col = 1, cols do
-                if flowField[1] and flowField[1][col] then
-                    local colX, _ = grid.gridToScreen(col, 1)
-                    local dist = abs(colX - self.x)
-                    if dist < bestDist then
-                        bestDist = dist
-                        bestCol = col
-                    end
-                end
-            end
-
-            if bestCol then
-                -- Move toward the valid entry point
-                targetX, targetY = grid.gridToScreen(bestCol, 1)
-            else
-                -- No valid entry - stay put (pathfinding validation should prevent this)
-                targetX, targetY = self.x, self.y
-            end
-        end
+    elseif grid.isValidCell(gridX, gridY) then
+        -- On grid but no flow (at edge or blocked) - try to reach nearest edge
+        local edgeX, edgeY = grid.getNearestEdge(gridX, gridY)
+        targetX, targetY = grid.gridToScreen(edgeX, edgeY)
     else
-        -- On grid but no flow (shouldn't happen often): move toward base row
-        targetX, targetY = grid.gridToScreen(gridX, baseRow)
+        -- Outside grid bounds - find nearest valid cell on grid and move toward it
+        local clampedX = max(1, min(cols, gridX))
+        local clampedY = max(1, min(rows, gridY))
+        targetX, targetY = grid.gridToScreen(clampedX, clampedY)
     end
 
     -- Move toward target
@@ -974,14 +956,26 @@ function Creep:drawSpider()
     local sparkleTimeX = math.floor(t * 8)
     local sparkleTimeY = math.floor(t * 5)
 
-    -- Draw legs first (behind body) - matching portal style
-    local legPhases = {0, math.pi * 0.5, math.pi, math.pi * 1.5}
-    for _, lp in ipairs(self.legPixels) do
-        -- Snap bob offset to pixel grid to prevent sub-pixel gaps
-        local rawBob = math.sin(bobPhase + legPhases[lp.legIdx]) * legCfg.bobAmount * scale
-        local bob = floor(rawBob + 0.5)
+    -- Draw legs first (behind body) - pixel-perfect grid placement
+    -- Legs are rendered as chunks: each leg moves as a unit with no subpixel positions
+    local legPhases = {0, pi * 0.5, pi, pi * 1.5}
 
-        local wobbleNoise = math.sin(wobbleTime + lp.wobblePhase) * 0.5 + 0.5
+    -- Snap creep position to pixel grid for consistent leg placement
+    local creepSnapX = floor(self.x / ps + 0.5) * ps
+    local creepSnapY = floor(self.y / ps + 0.5) * ps
+
+    -- Pre-calculate pixel size in screen space (snapped)
+    local pixelW = floor(ps * scale + 0.5)
+    local pixelH = floor(ps * scale * deathSquashY + 0.5)
+    if pixelH < 1 then pixelH = 1 end
+    if pixelW < 1 then pixelW = 1 end
+
+    for _, lp in ipairs(self.legPixels) do
+        -- Snap bob offset to whole pixels
+        local rawBob = sin(bobPhase + legPhases[lp.legIdx]) * legCfg.bobAmount
+        local bob = floor(rawBob + 0.5) * floor(scale + 0.5)
+
+        local wobbleNoise = sin(wobbleTime + lp.wobblePhase) * 0.5 + 0.5
         local animatedEdge = 1.0 + lp.baseEdgeNoise * 0.2 + wobbleNoise * cfg.wobbleAmount * 0.2
 
         if lp.dist >= animatedEdge then
@@ -990,11 +984,13 @@ function Creep:drawSpider()
 
         local isEdge = lp.dist > animatedEdge - 0.3
 
-        -- Screen position with bob
-        local screenX = self.x + (lp.ox + lp.localX) * scale - ps * scale / 2
-        local screenY = self.y + (lp.oy + lp.localY) * scale * deathSquashY + bob - ps * scale * deathSquashY / 2
-        local pixelW = ps * scale
-        local pixelH = ps * scale * deathSquashY
+        -- Screen position: all components are pixel-snapped
+        -- creepSnapX/Y: snapped creep position
+        -- lp.ox/oy: already snapped leg anchor (from generation)
+        -- lp.gridX/Y: integer grid offsets (in pixel units)
+        -- bob: snapped bob offset
+        local screenX = floor(creepSnapX + lp.ox * scale + lp.gridX * pixelW)
+        local screenY = floor(creepSnapY + lp.oy * scale * deathSquashY + lp.gridY * pixelH + bob)
 
         local r, g, b
 
@@ -1041,10 +1037,10 @@ function Creep:drawSpider()
         ::continue_leg::
     end
 
-    -- Draw body pixels (elongated rift) - matching portal style
+    -- Draw body pixels (elongated rift) - pixel-perfect grid placement
     local coreSize = cfg.coreSize or 4
     for _, p in ipairs(self.bodyPixels) do
-        local wobbleNoise = math.sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
+        local wobbleNoise = sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
         local animatedEdge = 1.0 + p.baseEdgeNoise * 0.15 + wobbleNoise * cfg.wobbleAmount * 0.15
 
         if p.dist >= animatedEdge then
@@ -1053,13 +1049,15 @@ function Creep:drawSpider()
 
         local isEdge = p.dist > animatedEdge - 0.25
 
-        local screenX = self.x + p.relX * scale - ps * scale / 2
-        local screenY = self.y + p.relY * scale * deathSquashY - ps * scale * deathSquashY / 2
-        local pixelW = ps * scale
-        local pixelH = ps * scale * deathSquashY
+        -- Screen position: all components are pixel-snapped
+        -- creepSnapX/Y: snapped creep position (already calculated for legs)
+        -- p.gridX/Y: integer grid offsets (in pixel units)
+        local screenX = floor(creepSnapX + p.gridX * pixelW)
+        local screenY = floor(creepSnapY + p.gridY * pixelH)
 
         -- Check if in squared core region (pitch black center)
-        local inCore = abs(p.relX) < coreSize and abs(p.relY) < coreSize
+        -- gridX/gridY are in pixel units, coreSize is in pixels
+        local inCore = abs(p.gridX) < coreSize and abs(p.gridY) < coreSize
 
         local r, g, b
 

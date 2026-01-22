@@ -12,9 +12,6 @@ local state = {
     lives = 0,
     voidShards = 0,
     voidCrystals = 0,
-    sent = {
-        voidSpawn = 0,
-    },
     -- Run stats for recap screen
     stats = {
         kills = 0,
@@ -31,7 +28,6 @@ function Economy.init()
     state.lives = Config.STARTING_LIVES
     state.voidShards = Config.STARTING_VOID_SHARDS
     state.voidCrystals = Config.STARTING_VOID_CRYSTALS
-    state.sent = { voidSpawn = 0, voidSpider = 0 }
     -- Reset run stats
     state.stats = {
         kills = 0,
@@ -49,10 +45,6 @@ end
 
 function Economy.getLives()
     return state.lives
-end
-
-function Economy.getSent()
-    return state.sent
 end
 
 function Economy.canAfford(amount)
@@ -73,27 +65,6 @@ function Economy.spendGold(amount)
     return true
 end
 
-function Economy.sendCreep(creepType)
-    local creepConfig = Config.CREEPS[creepType]
-    if not creepConfig then return false end
-
-    if not Economy.canAfford(creepConfig.sendCost) then
-        return false
-    end
-
-    Economy.spendGold(creepConfig.sendCost)
-
-    -- Initialize send counter if not present
-    state.sent[creepType] = (state.sent[creepType] or 0) + 1
-
-    EventBus.emit("creep_sent", {
-        type = creepType,
-        totalSent = state.sent[creepType],
-    })
-
-    return true
-end
-
 function Economy.loseLife()
     state.lives = state.lives - 1
     EventBus.emit("life_lost", { remaining = state.lives })
@@ -103,12 +74,6 @@ function Economy.loseLife()
         return true -- Game over
     end
     return false
-end
-
--- Add gold from clicking the Void
-function Economy.voidClicked(amount)
-    state.gold = state.gold + amount
-    EventBus.emit("gold_changed", { amount = amount, total = state.gold })
 end
 
 -- Void Shards (meta-currency for skill tree)

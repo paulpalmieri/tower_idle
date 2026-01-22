@@ -12,6 +12,12 @@ local Config = {}
 Config.MAX_DELTA_TIME = 1/30  -- Cap delta time to prevent physics issues
 
 -- =============================================================================
+-- DEVELOPMENT
+-- =============================================================================
+
+Config.DEV_SKIP_MENU = true  -- Skip main menu and go directly to gameplay
+
+-- =============================================================================
 -- SCREEN (Fixed 16:9 canvas with letterboxing)
 -- =============================================================================
 
@@ -51,14 +57,32 @@ Config.CAMERA = {
 -- GRID
 -- =============================================================================
 
-Config.CELL_SIZE = 64          -- Must be multiple of 16 for clean sprite scaling (64/16 = 4x)
-Config.GRID_COLS = 11          -- Odd number for true center column (center = column 6)
-Config.GRID_ROWS = 15          -- Odd number for true center row (center = row 8)
-Config.SPAWN_ROWS = 2          -- Top rows are spawn zone (walkable but not buildable)
-Config.BASE_ROWS = 2           -- Bottom rows are base zone (walkable but not buildable)
-Config.VOID_HEIGHT = 2         -- Void portal zone height in cell units (above grid)
-Config.VOID_BUFFER = 1.0       -- Buffer between void portal and grid top (in cell units)
-Config.EXIT_BUFFER = 1.0       -- Buffer between grid bottom and exit portal (in cell units)
+Config.CELL_SIZE = 48          -- Cell size for 18x18 grid
+Config.GRID_COLS = 18          -- Battlefield with border
+Config.GRID_ROWS = 18          -- Battlefield with border
+
+-- =============================================================================
+-- SPAWN PORTALS (4 portals in 2x2 pattern at center)
+-- =============================================================================
+
+Config.SPAWN_PORTALS = {
+    -- Grid positions for 4 portals in center 10x10 area of 18x18 grid
+    -- Center 10x10 spans cells 5-14, quadrant centers at (7,7), (12,7), (7,12), (12,12)
+    positions = {{7, 7}, {12, 7}, {7, 12}, {12, 12}},
+    activationWaves = {1, 1, 1, 1},  -- All 4 portals active from start
+    size = 24,                          -- Smaller than current void
+    glowDuration = 1.5,                 -- Glow before spawn (legacy)
+    angerPerClick = 5,                  -- Anger increase per portal click
+
+    -- Spawn pacing: portals charge up sequentially before spawning enemies
+    -- Only ONE portal charges at a time (linear round-robin)
+    chargeDuration = 10.0,              -- Time each portal charges (slow buildup to red)
+    chargeColors = {
+        start = {0.5, 0.25, 0.7},       -- Normal purple edge glow
+        mid = {0.8, 0.3, 0.5},          -- Transitioning to red
+        ready = {1.0, 0.25, 0.15},      -- Fully charged red
+    },
+}
 
 -- =============================================================================
 -- ECONOMY
@@ -314,7 +338,6 @@ Config.CREEPS = {
         hp = 50,
         speed = 50,           -- pixels per second
         reward = 8,           -- gold on kill
-        sendCost = 100,       -- cost to send
         size = 14,
         color = {0.5, 0.2, 0.7},
     },
@@ -323,7 +346,6 @@ Config.CREEPS = {
         hp = 25,              -- Fragile (lower than voidSpawn)
         speed = 70,           -- Fast (higher than voidSpawn)
         reward = 4,           -- Lower reward
-        sendCost = 60,        -- Cheaper to send
         size = 12,            -- Slightly smaller body
         color = {0.6, 0.2, 0.8},
     },
@@ -332,7 +354,6 @@ Config.CREEPS = {
         hp = 500,
         speed = 30,
         reward = 100,
-        sendCost = 0,         -- Bosses can't be sent
         size = 28,
         color = {0.7, 0.1, 0.9},
         isBoss = true,
@@ -342,7 +363,6 @@ Config.CREEPS = {
         hp = 600,
         speed = 35,
         reward = 150,
-        sendCost = 0,
         size = 30,
         color = {0.9, 0.15, 0.1},
         isBoss = true,
@@ -1264,8 +1284,8 @@ Config.EXIT_ANIMATION = {
 Config.SPAWN_ANIMATION = {
     -- Timing (seconds)
     tearOpenDuration = 0.3,
-    emergeDuration = 0.4,
-    tearCloseDuration = 0.2,
+    emergeDuration = 0.6,              -- Longer pause after appearing
+    tearCloseDuration = 0.3,
 
     -- Visual settings
     tearWidth = 8,           -- Pixels wide at max open

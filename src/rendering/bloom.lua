@@ -90,7 +90,7 @@ local function drawGlowCircle(x, y, radius, r, g, b, intensity, pulse)
 end
 
 -- Extract glow sources from entities
-function Bloom.render(void, creeps, towers, projectiles, groundEffects, lobbedProjectiles, lightningProjectiles, blackholes, time)
+function Bloom.render(spawnPortals, creeps, towers, projectiles, groundEffects, lobbedProjectiles, lightningProjectiles, blackholes, time)
     if not state.enabled then return end
 
     state.time = time
@@ -103,13 +103,15 @@ function Bloom.render(void, creeps, towers, projectiles, groundEffects, lobbedPr
     love.graphics.clear(0, 0, 0, 0)  -- Transparent background
     love.graphics.setBlendMode("alpha")  -- Use alpha blend, not additive
 
-    -- Void portal glow (brightest, large radius, pulsing)
-    if void and glowCfg.void then
+    -- Spawn portal glow (brightest, large radius, pulsing)
+    if spawnPortals and glowCfg.void then
         local cfg = glowCfg.void
-        local params = void:getGlowParams()
-        if params then
-            local radius = params.radius * cfg.radius_mult
-            drawGlowCircle(params.x, params.y, radius, params.color[1], params.color[2], params.color[3], cfg.intensity, true)
+        for _, portal in ipairs(spawnPortals) do
+            local params = portal:getGlowParams()
+            if params then
+                local radius = params.radius * cfg.radius_mult
+                drawGlowCircle(params.x, params.y, radius, params.color[1], params.color[2], params.color[3], cfg.intensity, true)
+            end
         end
     end
 

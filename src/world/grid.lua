@@ -1,5 +1,6 @@
 -- src/world/grid.lua
 -- Grid state and queries (data only, no rendering)
+-- Reworked for 40x40 grid with 4 spawn portals at center, creeps escape at edges
 
 local Config = require("src.config")
 local Display = require("src.core.display")
@@ -15,11 +16,10 @@ local state = {
     offsetY = 0,
     playAreaWidth = 0,
     panelWidth = 0,
-    -- Void positioning (void is above the grid)
-    voidX = 0,
-    voidY = 0,
-    voidWidth = 0,
-    voidHeight = 0,
+    worldWidth = 0,
+    worldHeight = 0,
+    -- Portal grid positions (cached from config)
+    portalPositions = {},
 }
 
 function Grid.init(screenWidth, screenHeight)
@@ -44,13 +44,13 @@ function Grid.init(screenWidth, screenHeight)
     end
     state.cellSize = Config.CELL_SIZE
 
-    -- Use fixed grid dimensions from config (odd numbers for true center)
-    state.cols = Config.GRID_COLS or 11
-    state.rows = Config.GRID_ROWS or 15
+    -- Use fixed grid dimensions from config (40x40)
+    state.cols = Config.GRID_COLS or 40
+    state.rows = Config.GRID_ROWS or 40
 
     -- Calculate grid dimensions
-    local gridWidth = state.cols * state.cellSize   -- 11 * 64 = 704
-    local gridHeight = state.rows * state.cellSize  -- 15 * 64 = 960
+    local gridWidth = state.cols * state.cellSize   -- 40 * 32 = 1280
+    local gridHeight = state.rows * state.cellSize  -- 40 * 32 = 1280
 
     -- CENTER GRID ON WORLD
     -- World center: (2800/2, 1800/2) = (1400, 900)
@@ -61,31 +61,27 @@ function Grid.init(screenWidth, screenHeight)
     state.offsetX = math.floor(worldCenterX - gridWidth / 2)
     state.offsetY = math.floor(worldCenterY - gridHeight / 2)
 
-    -- VOID ZONE (above grid)
-    -- Void height in pixels + buffer
-    local voidHeightPixels = Config.VOID_HEIGHT * state.cellSize  -- 2 * 64 = 128
-    local bufferHeightPixels = Config.VOID_BUFFER * state.cellSize  -- 0.5 * 64 = 32
+    -- Cache portal positions from config
+    state.portalPositions = Config.SPAWN_PORTALS.positions or {{20, 20}}
 
-    -- Position void above the grid
-    state.voidWidth = gridWidth
-    state.voidHeight = voidHeightPixels
-    state.voidX = state.offsetX
-    state.voidY = state.offsetY - bufferHeightPixels - voidHeightPixels
-
-    -- Initialize cells: 0=empty, 1=tower, 2=spawn zone (walkable only), 3=base
-    -- Top SPAWN_ROWS are walkable but not buildable
-    -- Bottom BASE_ROWS are the base zone
-    local spawnRows = Config.SPAWN_ROWS or 0
+    -- Initialize cells: 0=empty (buildable), 1=tower, 4=portal (walkable, not buildable)
     state.cells = {}
     for y = 1, state.rows do
         state.cells[y] = {}
         for x = 1, state.cols do
-            if y <= spawnRows then
-                state.cells[y][x] = 2  -- spawn zone (walkable, not buildable)
-            elseif y > state.rows - Config.BASE_ROWS then
-                state.cells[y][x] = 3  -- base zone
-            else
-                state.cells[y][x] = 0  -- empty (buildable)
+            state.cells[y][x] = 0  -- All cells start empty
+        end
+    end
+
+    -- Mark 3x3 area around each portal as type 4 (unbuildable but walkable)
+    for _, pos in ipairs(state.portalPositions) do
+        local px, py = pos[1], pos[2]
+        for dy = -1, 1 do
+            for dx = -1, 1 do
+                local cx, cy = px + dx, py + dy
+                if Grid.isValidCell(cx, cy) then
+                    state.cells[cy][cx] = 4
+                end
             end
         end
     end
@@ -121,7 +117,7 @@ end
 
 function Grid.canPlaceTower(x, y)
     if not Grid.isValidCell(x, y) then return false end
-    return state.cells[y][x] == 0
+    return state.cells[y][x] == 0  -- Only empty cells are buildable
 end
 
 function Grid.placeTower(gridX, gridY, tower)
@@ -140,67 +136,106 @@ function Grid.clearCell(gridX, gridY)
     return false
 end
 
--- Rendering functions moved to src/rendering/grid_renderer.lua
+-- =============================================================================
+-- EDGE DETECTION (creeps escape at any edge)
+-- =============================================================================
 
--- Expose state for pathfinding
+-- Check if a cell is on the grid edge
+function Grid.isEdgeCell(gridX, gridY)
+    if not Grid.isValidCell(gridX, gridY) then return false end
+    return gridX == 1 or gridX == state.cols or gridY == 1 or gridY == state.rows
+end
+
+-- Get all edge cells (perimeter of grid)
+function Grid.getEdgeCells()
+    local edges = {}
+    -- Top and bottom rows
+    for x = 1, state.cols do
+        table.insert(edges, {x = x, y = 1})
+        table.insert(edges, {x = x, y = state.rows})
+    end
+    -- Left and right columns (excluding corners already added)
+    for y = 2, state.rows - 1 do
+        table.insert(edges, {x = 1, y = y})
+        table.insert(edges, {x = state.cols, y = y})
+    end
+    return edges
+end
+
+-- Get the nearest edge cell from a given position
+function Grid.getNearestEdge(gridX, gridY)
+    local distToLeft = gridX - 1
+    local distToRight = state.cols - gridX
+    local distToTop = gridY - 1
+    local distToBottom = state.rows - gridY
+
+    local minDist = math.min(distToLeft, distToRight, distToTop, distToBottom)
+
+    if minDist == distToLeft then
+        return 1, gridY
+    elseif minDist == distToRight then
+        return state.cols, gridY
+    elseif minDist == distToTop then
+        return gridX, 1
+    else
+        return gridX, state.rows
+    end
+end
+
+-- =============================================================================
+-- PORTAL FUNCTIONS (4 spawn portals in 2x2 pattern)
+-- =============================================================================
+
+-- Get portal grid positions from config
+function Grid.getPortalGridPositions()
+    return state.portalPositions
+end
+
+-- Get world position for a portal by index (1-4)
+function Grid.getPortalWorldPosition(index)
+    local pos = state.portalPositions[index]
+    if not pos then return nil, nil end
+    return Grid.gridToScreen(pos[1], pos[2])
+end
+
+-- Get spawn position from a portal (random cell within 3x3 area around portal)
+function Grid.getSpawnPosition(portalIndex)
+    portalIndex = portalIndex or math.random(1, #state.portalPositions)
+    portalIndex = math.max(1, math.min(#state.portalPositions, portalIndex))
+
+    local pos = state.portalPositions[portalIndex]
+    if not pos then
+        return state.worldWidth / 2, state.worldHeight / 2
+    end
+
+    -- Pick random cell within 3x3 area around portal
+    local dx = math.random(-1, 1)
+    local dy = math.random(-1, 1)
+    local spawnGridX = pos[1] + dx
+    local spawnGridY = pos[2] + dy
+
+    -- Clamp to valid grid bounds
+    spawnGridX = math.max(1, math.min(state.cols, spawnGridX))
+    spawnGridY = math.max(1, math.min(state.rows, spawnGridY))
+
+    return Grid.gridToScreen(spawnGridX, spawnGridY)
+end
+
+-- =============================================================================
+-- EXPOSE STATE FOR PATHFINDING
+-- =============================================================================
+
 function Grid.getCells() return state.cells end
 function Grid.getCols() return state.cols end
 function Grid.getRows() return state.rows end
-function Grid.getBaseRow() return state.rows end
+function Grid.getCellSize() return state.cellSize end
+function Grid.getOffset() return state.offsetX, state.offsetY end
 
--- Get void bounds (void is positioned above the grid)
-function Grid.getVoidBounds()
-    return state.voidX, state.voidY, state.voidWidth, state.voidHeight
-end
-
--- Alias for backwards compatibility
-function Grid.getSpawnZoneBounds()
-    return Grid.getVoidBounds()
-end
-
--- Get the center position for the portal (centered in void zone)
-function Grid.getPortalCenter()
-    -- Center horizontally on world (same as grid center X)
-    local x = state.worldWidth / 2
-    -- Center vertically in void zone
-    local y = state.voidY + state.voidHeight / 2
-    return x, y
-end
-
--- Get the Y coordinate of the grid bottom (for collision detection)
-function Grid.getGridBottom()
-    return state.offsetY + state.rows * state.cellSize
-end
-
--- Get the center position for the exit portal (below the grid)
-function Grid.getExitPortalCenter()
-    -- Center horizontally on world (same as grid center X)
-    local x = state.worldWidth / 2
-    -- Position below the grid with a buffer (symmetric with void buffer)
-    local gridBottom = Grid.getGridBottom()
-    local exitBuffer = (Config.EXIT_BUFFER or 1.0) * state.cellSize
-    local y = gridBottom + exitBuffer
-    return x, y
-end
-
--- Get a spawn position for creeps
--- If void reference provided, spawn from within the portal
--- Otherwise falls back to column-based spawning
-function Grid.getSpawnPosition(col, void)
-    -- If void reference provided, spawn from its position
-    if void then
-        -- Random position within portal radius
-        local angle = math.random() * math.pi * 2
-        local dist = math.random() * void.size * 0.5  -- Within inner half
-        local x = void.x + math.cos(angle) * dist
-        local y = void.y + math.sin(angle) * dist
-        return x, y
-    end
-    -- Fallback to old column-based spawning
-    col = col or math.random(1, state.cols)
-    local x = state.voidX + (col - 0.5) * state.cellSize
-    local y = state.voidY + state.voidHeight - state.cellSize * 0.3
-    return x, y
+-- Get grid bounds in world coordinates
+function Grid.getGridBounds()
+    local gridWidth = state.cols * state.cellSize
+    local gridHeight = state.rows * state.cellSize
+    return state.offsetX, state.offsetY, gridWidth, gridHeight
 end
 
 return Grid

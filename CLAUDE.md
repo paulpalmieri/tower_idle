@@ -562,6 +562,40 @@ local dist = math.sqrt(adjustedRelX^2 + relY^2)
 | **Ghost** | High wobble, low falloff | Fade at edges |
 | **Splitter** | Symmetric halves | Split color zones |
 
+### Pixel-Perfect Rendering Rules
+
+**CRITICAL:** All procedural pixel-art rendering must follow these rules to avoid subpixel artifacts:
+
+1. **Use integer grid offsets for pixels**
+   - Store pixel positions as integer grid offsets (gridX, gridY) from the entity center
+   - Never use floating point offsets for pixel positions within a sprite
+
+2. **Snap entity positions when rendering**
+   ```lua
+   -- Snap creep position to pixel grid before drawing
+   local creepSnapX = floor(self.x / ps + 0.5) * ps
+   local creepSnapY = floor(self.y / ps + 0.5) * ps
+   ```
+
+3. **Snap all screen positions**
+   ```lua
+   -- Final screen position must always be floored
+   local screenX = floor(creepSnapX + p.gridX * pixelW)
+   local screenY = floor(creepSnapY + p.gridY * pixelH)
+   ```
+
+4. **Snap animation offsets**
+   ```lua
+   -- Bob/movement offsets must be snapped to whole pixels
+   local rawBob = sin(bobPhase) * bobAmount
+   local bob = floor(rawBob + 0.5) * floor(scale + 0.5)
+   ```
+
+5. **Multi-part sprites (legs, limbs)**
+   - Treat each part as a pixel chunk that moves as a unit
+   - Anchor positions must be snapped to pixel grid during generation
+   - Animation = visibility/color changes, not subpixel movement
+
 ### Key Files
 
 - `src/entities/creep.lua` — Creep entity with procedural rendering

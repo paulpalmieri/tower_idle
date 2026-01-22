@@ -3,8 +3,6 @@
 
 local Config = require("src.config")
 local EventBus = require("src.core.event_bus")
-local Grid = require("src.world.grid")
-local Creep = require("src.entities.creep")
 
 local Waves = {}
 
@@ -14,8 +12,10 @@ local state = {
     spawning = false,
     spawnQueue = {},
     spawnTimer = 0,
-    currentTier = 0, -- Current tier from Void (0-4), only affects enemy stats (HP/speed)
+    currentTier = 0, -- Current tier from Anger (0-4), only affects enemy stats (HP/speed)
     gameWon = false, -- True when all waves completed
+    activePortals = {1}, -- Which portals are active (1-4)
+    currentPortalIndex = 1, -- For round-robin spawning
 }
 
 function Waves.init()
@@ -26,6 +26,47 @@ function Waves.init()
     state.spawnTimer = 0
     state.currentTier = 0
     state.gameWon = false
+    state.activePortals = {1}  -- Start with only portal 1 active
+    state.currentPortalIndex = 1
+end
+
+-- Check and activate portals based on wave number
+local function _checkPortalActivation(waveNumber)
+    local activationWaves = Config.SPAWN_PORTALS.activationWaves
+    local portalsToActivate = {}
+
+    for i, activationWave in ipairs(activationWaves) do
+        if waveNumber >= activationWave then
+            -- Check if portal is not already active
+            local alreadyActive = false
+            for _, activeIndex in ipairs(state.activePortals) do
+                if activeIndex == i then
+                    alreadyActive = true
+                    break
+                end
+            end
+
+            if not alreadyActive then
+                table.insert(portalsToActivate, i)
+            end
+        end
+    end
+
+    -- Activate new portals
+    for _, portalIndex in ipairs(portalsToActivate) do
+        table.insert(state.activePortals, portalIndex)
+        EventBus.emit("activate_portal", { index = portalIndex })
+    end
+end
+
+-- Get next portal for spawning (round-robin)
+local function _getNextPortal()
+    local portalIndex = state.activePortals[state.currentPortalIndex]
+    state.currentPortalIndex = state.currentPortalIndex + 1
+    if state.currentPortalIndex > #state.activePortals then
+        state.currentPortalIndex = 1
+    end
+    return portalIndex
 end
 
 -- Set the current tier (called when Void tier changes)
@@ -89,15 +130,20 @@ local function _startWave()
     state.spawning = true
     state.spawnQueue = _buildQueue()
     state.spawnTimer = 0
+    state.currentPortalIndex = 1  -- Reset portal round-robin
+
+    -- Check for portal activations
+    _checkPortalActivation(state.waveNumber)
 
     EventBus.emit("wave_started", {
         waveNumber = state.waveNumber,
         enemyCount = #state.spawnQueue,
         tier = state.currentTier,
+        activePortals = #state.activePortals,
     })
 end
 
--- Spawn the next creep from the queue
+-- Queue the next creep spawn on the appropriate portal
 local function _spawnNext()
     if #state.spawnQueue == 0 then
         -- Don't set spawning = false here, let the wave clear check handle it
@@ -109,19 +155,21 @@ local function _spawnNext()
 
     -- Calculate multipliers based on wave number and tier
     local waveHealthMult = 1.0 + ((state.waveNumber - 1) * Config.WAVE_HEALTH_SCALING)
-    local tierHpBonus = state.currentTier * Config.VOID.tierHpBonus
-    local tierSpeedBonus = state.currentTier * Config.VOID.tierSpeedBonus
+    local tierHpBonus = state.currentTier * (Config.VOID and Config.VOID.tierHpBonus or 0.15)
+    local tierSpeedBonus = state.currentTier * (Config.VOID and Config.VOID.tierSpeedBonus or 0.05)
     local healthMultiplier = waveHealthMult * (1.0 + tierHpBonus)
     local speedMultiplier = 1.0 + tierSpeedBonus
 
-    -- Random spawn column from the void area
-    local cols = Grid.getCols()
-    local spawnCol = math.random(1, cols)
+    -- Get next portal for this spawn (round-robin across active portals)
+    local portalIndex = _getNextPortal()
 
-    local x, y = Grid.getSpawnPosition(spawnCol)
-    local creep = Creep(x, y, creepType, healthMultiplier, speedMultiplier)
-
-    EventBus.emit("spawn_creep", { creep = creep })
+    -- Queue the spawn on the portal (portal will charge then spawn)
+    EventBus.emit("queue_spawn", {
+        portalIndex = portalIndex,
+        creepType = creepType,
+        healthMultiplier = healthMultiplier,
+        speedMultiplier = speedMultiplier,
+    })
 end
 
 function Waves.update(dt, creeps)
@@ -208,28 +256,37 @@ function Waves.isGameWon()
     return state.gameWon
 end
 
--- Spawn red bosses (called from void at tier 4)
+-- Spawn red bosses (called at max anger tier)
 function Waves.spawnRedBosses(count)
     count = count or 2
 
     -- Calculate tier 4 bonuses (max tier)
-    local tierHpBonus = 4 * Config.VOID.tierHpBonus
-    local tierSpeedBonus = 4 * Config.VOID.tierSpeedBonus
+    local tierHpBonus = 4 * (Config.VOID and Config.VOID.tierHpBonus or 0.15)
+    local tierSpeedBonus = 4 * (Config.VOID and Config.VOID.tierSpeedBonus or 0.05)
     local healthMultiplier = 1.0 + tierHpBonus
     local speedMultiplier = 1.0 + tierSpeedBonus
 
-    local cols = Grid.getCols()
-
+    -- Spread bosses across active portals (queue spawns for pacing)
     for i = 1, count do
-        -- Spread bosses across spawn columns
-        local spawnCol = math.floor(cols * (i / (count + 1)))
-        spawnCol = math.max(1, math.min(cols, spawnCol))
+        local portalIndex = state.activePortals[((i - 1) % #state.activePortals) + 1]
 
-        local x, y = Grid.getSpawnPosition(spawnCol)
-        local creep = Creep(x, y, "redBoss", healthMultiplier, speedMultiplier)
-
-        EventBus.emit("spawn_creep", { creep = creep })
+        EventBus.emit("queue_spawn", {
+            portalIndex = portalIndex,
+            creepType = "redBoss",
+            healthMultiplier = healthMultiplier,
+            speedMultiplier = speedMultiplier,
+        })
     end
+end
+
+-- Get count of active portals
+function Waves.getActivePortalCount()
+    return #state.activePortals
+end
+
+-- Get list of active portal indices
+function Waves.getActivePortals()
+    return state.activePortals
 end
 
 return Waves

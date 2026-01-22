@@ -13,17 +13,16 @@ function GridRenderer.draw(showGridOverlay)
     local rows = Grid.getRows()
     local cells = Grid.getCells()
     local cellSize = Config.CELL_SIZE
-    local spawnRows = Config.SPAWN_ROWS or 0
-    local buildableRows = rows - Config.BASE_ROWS
     local dotRadius = math.max(3, cellSize / 10)
 
     love.graphics.setColor(Config.COLORS.grid)
 
-    -- Start after spawn rows, end before base rows
-    for y = spawnRows + 1, buildableRows do
+    -- Show dots for all empty (buildable) cells
+    for y = 1, rows do
         for x = 1, cols do
-            -- Only show dots for empty (buildable) cells
-            if cells[y][x] == 0 then
+            -- Only show dots for empty (buildable) cells (type 0)
+            -- Skip portal cells (type 4) and tower cells (type 1)
+            if cells[y] and cells[y][x] == 0 then
                 local centerX, centerY = Grid.gridToScreen(x, y)
                 love.graphics.circle("fill", centerX, centerY, dotRadius)
             end
@@ -75,15 +74,15 @@ function GridRenderer.drawDebug(flowField)
             -- Adjust to cell corner instead of center
             screenX = screenX - cellSize / 2
             screenY = screenY - cellSize / 2
-            local cellValue = cells[y][x]
+            local cellValue = cells[y] and cells[y][x] or 0
 
             -- Color based on cell state
             if cellValue == 1 then
                 love.graphics.setColor(1, 0.2, 0.2, 0.3)  -- Tower: red
-            elseif cellValue == 2 then
-                love.graphics.setColor(0.6, 0.3, 0.8, 0.3)  -- Spawn zone: purple
-            elseif cellValue == 3 then
-                love.graphics.setColor(0.2, 1, 0.2, 0.3)  -- Base: green
+            elseif cellValue == 4 then
+                love.graphics.setColor(0.6, 0.3, 0.8, 0.3)  -- Portal: purple
+            elseif Grid.isEdgeCell(x, y) then
+                love.graphics.setColor(0.2, 1, 0.2, 0.3)  -- Edge: green
             else
                 love.graphics.setColor(0.5, 0.5, 0.5, 0.2)  -- Empty: gray
             end
@@ -91,29 +90,22 @@ function GridRenderer.drawDebug(flowField)
         end
     end
 
-    -- Draw row 0 (spawn buffer) cell boundaries
-    love.graphics.setColor(0.6, 0.3, 0.8, 0.3)  -- Purple for spawn buffer
-    for x = 1, cols do
-        local screenX, screenY = Grid.gridToScreen(x, 0)
-        screenX = screenX - cellSize / 2
-        screenY = screenY - cellSize / 2
-        love.graphics.rectangle("line", screenX, screenY, cellSize, cellSize)
-    end
-
-    -- Draw continuous ghost paths from each spawn column following the flow field
+    -- Draw continuous ghost paths from spawn portals following the flow field
     if flowField then
         love.graphics.setLineWidth(2)
 
-        for startX = 1, cols do
-            -- Check if this column has a valid flow at row 0 or row 1
-            local hasPath = (flowField[0] and flowField[0][startX]) or (flowField[1] and flowField[1][startX])
+        -- Get portal positions and trace paths from each
+        local portalPositions = Config.SPAWN_PORTALS and Config.SPAWN_PORTALS.positions or {}
+        for i, pos in ipairs(portalPositions) do
+            local startX, startY = pos[1], pos[2]
+            local hasPath = flowField[startY] and flowField[startY][startX]
             if hasPath then
-                -- Trace path from row 0 to base
+                -- Trace path from portal to edge
                 local points = {}
-                local x, y = startX, 0
+                local x, y = startX, startY
                 local maxSteps = rows * cols  -- Prevent infinite loops
 
-                -- Start point (row 0)
+                -- Start point
                 local screenX, screenY = Grid.gridToScreen(x, y)
                 table.insert(points, screenX)
                 table.insert(points, screenY)
@@ -122,7 +114,7 @@ function GridRenderer.drawDebug(flowField)
                 for _ = 1, maxSteps do
                     local flow = flowField[y] and flowField[y][x]
                     if not flow or (flow.dx == 0 and flow.dy == 0) then
-                        break  -- Reached base or dead end
+                        break  -- Reached edge or dead end
                     end
 
                     x = x + flow.dx
@@ -132,16 +124,16 @@ function GridRenderer.drawDebug(flowField)
                     table.insert(points, screenX)
                     table.insert(points, screenY)
 
-                    -- Stop if we've reached or passed the base row
-                    if y >= rows then
+                    -- Stop if we've reached an edge
+                    if Grid.isEdgeCell(x, y) then
                         break
                     end
                 end
 
-                -- Draw the path line with color based on column
+                -- Draw the path line with color based on portal index
                 if #points >= 4 then
-                    -- Cycle through colors for each column
-                    local hue = (startX - 1) / cols
+                    -- Cycle through colors for each portal
+                    local hue = (i - 1) / 4
                     local r = math.abs(math.sin(hue * math.pi * 2)) * 0.5 + 0.3
                     local g = math.abs(math.sin((hue + 0.33) * math.pi * 2)) * 0.5 + 0.3
                     local b = math.abs(math.sin((hue + 0.66) * math.pi * 2)) * 0.5 + 0.3
@@ -157,8 +149,7 @@ function GridRenderer.drawDebug(flowField)
         love.graphics.setColor(0.3, 0.8, 1, 0.6)  -- Cyan
         local arrowSize = cellSize * 0.3
 
-        -- Include row 0 in arrow display
-        for y = 0, rows do
+        for y = 1, rows do
             for x = 1, cols do
                 local flow = flowField[y] and flowField[y][x]
                 if flow and (flow.dx ~= 0 or flow.dy ~= 0) then
