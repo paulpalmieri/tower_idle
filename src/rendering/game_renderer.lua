@@ -48,31 +48,6 @@ function GameRenderer.drawEntities(entities)
     end
 end
 
--- Draw cadaver (dead creep remains)
-function GameRenderer.drawCadaver(cadaver)
-    if not cadaver or not cadaver.pixels then return end
-
-    local alpha = 1.0 - (cadaver.lifetime / Config.CADAVER_LIFETIME)
-    local pixelSize = Config.VOID_SPAWN.pixelSize or 3
-
-    for _, pixel in ipairs(cadaver.pixels) do
-        local x = cadaver.x + pixel.relX
-        local y = cadaver.y + pixel.relY
-
-        -- Desaturated purple-gray for dead creeps
-        local gray = 0.2 + pixel.brightness * 0.15
-        love.graphics.setColor(gray + 0.05, gray, gray + 0.08, alpha * 0.7)
-        love.graphics.rectangle("fill", x - pixelSize/2, y - pixelSize/2, pixelSize, pixelSize)
-    end
-end
-
--- Draw all cadavers
-function GameRenderer.drawCadavers(cadavers)
-    for _, cadaver in ipairs(cadavers) do
-        GameRenderer.drawCadaver(cadaver)
-    end
-end
-
 -- Draw range ellipse for a tower
 function GameRenderer.drawRangeEllipse(tower, alpha)
     alpha = alpha or 0.05
@@ -107,9 +82,6 @@ function GameRenderer.drawDebugOverlay(stats)
         end
         if stats.effects then
             table.insert(lines, string.format("Effects: %d", stats.effects))
-        end
-        if stats.cadavers then
-            table.insert(lines, string.format("Cadavers: %d", stats.cadavers))
         end
     end
 

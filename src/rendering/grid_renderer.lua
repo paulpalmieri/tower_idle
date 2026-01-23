@@ -3,28 +3,59 @@
 
 local Config = require("src.config")
 local Grid = require("src.world.grid")
+local Pathfinding = require("src.systems.pathfinding")
 
 local GridRenderer = {}
+
+-- Cache of which cells are valid for tower placement
+-- Recomputed only when grid changes (tower placed/sold)
+local placeableCache = {}
+local cacheValid = false
+
+-- Recompute the placeable cells cache
+-- Call this after any grid change (tower placed, sold, or grid init)
+function GridRenderer.invalidateCache()
+    cacheValid = false
+end
+
+function GridRenderer.rebuildCache()
+    local cols = Grid.getCols()
+    local rows = Grid.getRows()
+
+    placeableCache = {}
+    for y = 1, rows do
+        placeableCache[y] = {}
+        for x = 1, cols do
+            placeableCache[y][x] = Pathfinding.canPlaceTowerAt(Grid, x, y)
+        end
+    end
+    cacheValid = true
+end
 
 function GridRenderer.draw(showGridOverlay)
     if not showGridOverlay then return end
 
+    -- Rebuild cache if invalidated
+    if not cacheValid then
+        GridRenderer.rebuildCache()
+    end
+
     local cols = Grid.getCols()
     local rows = Grid.getRows()
-    local cells = Grid.getCells()
     local cellSize = Config.CELL_SIZE
-    local dotRadius = math.max(3, cellSize / 10)
 
+    -- Draw grid cells only for cells where towers can actually be placed
     love.graphics.setColor(Config.COLORS.grid)
+    love.graphics.setLineWidth(1)
 
-    -- Show dots for all empty (buildable) cells
     for y = 1, rows do
         for x = 1, cols do
-            -- Only show dots for empty (buildable) cells (type 0)
-            -- Skip portal cells (type 4) and tower cells (type 1)
-            if cells[y] and cells[y][x] == 0 then
+            -- Use cached placement validity
+            if placeableCache[y] and placeableCache[y][x] then
                 local centerX, centerY = Grid.gridToScreen(x, y)
-                love.graphics.circle("fill", centerX, centerY, dotRadius)
+                local cellX = centerX - cellSize / 2
+                local cellY = centerY - cellSize / 2
+                love.graphics.rectangle("line", cellX, cellY, cellSize, cellSize)
             end
         end
     end
@@ -34,17 +65,37 @@ function GridRenderer.drawHover(mouseX, mouseY, canAfford, towerType)
     local gridX, gridY = Grid.screenToGrid(mouseX, mouseY)
     if not Grid.isValidCell(gridX, gridY) then return end
 
-    local canPlace = Grid.canPlaceTower(gridX, gridY) and canAfford
-    local centerX, centerY = Grid.gridToScreen(gridX, gridY)
-
-    -- Draw highlighted dot at hovered cell (white if can place, red if cannot)
-    local dotRadius = math.max(4, Config.CELL_SIZE / 8)
-    if canPlace then
-        love.graphics.setColor(1, 1, 1, 0.9)
-    else
-        love.graphics.setColor(1, 0.3, 0.3, 0.7)
+    -- Rebuild cache if invalidated (in case hover is called before draw)
+    if not cacheValid then
+        GridRenderer.rebuildCache()
     end
-    love.graphics.circle("fill", centerX, centerY, dotRadius)
+
+    -- Use cached placement validity instead of expensive pathfinding check
+    local canPlaceAtCell = placeableCache[gridY] and placeableCache[gridY][gridX]
+    local canPlace = canPlaceAtCell and canAfford
+    local centerX, centerY = Grid.gridToScreen(gridX, gridY)
+    local cellSize = Config.CELL_SIZE
+
+    -- Calculate cell top-left corner
+    local cellX = centerX - cellSize / 2
+    local cellY = centerY - cellSize / 2
+
+    -- Fill the hovered cell (green if can place, red if cannot)
+    if canPlace then
+        love.graphics.setColor(0.2, 0.8, 0.3, 0.4)  -- Green
+    else
+        love.graphics.setColor(0.8, 0.2, 0.2, 0.4)  -- Red
+    end
+    love.graphics.rectangle("fill", cellX, cellY, cellSize, cellSize)
+
+    -- Draw cell border for emphasis
+    if canPlace then
+        love.graphics.setColor(0.3, 1.0, 0.4, 0.7)  -- Bright green border
+    else
+        love.graphics.setColor(1.0, 0.3, 0.3, 0.7)  -- Bright red border
+    end
+    love.graphics.setLineWidth(2)
+    love.graphics.rectangle("line", cellX, cellY, cellSize, cellSize)
 
     -- Draw range preview for valid placements - subtle fill only, no border
     -- Flattened ellipse for top-down perspective

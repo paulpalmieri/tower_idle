@@ -31,6 +31,8 @@ local function getCachedBase(seed, level)
     if not baseCanvasCache[key] then
         -- Create and render base to canvas
         local canvas = love.graphics.newCanvas(BASE_CANVAS_SIZE, BASE_CANVAS_SIZE)
+        -- Use nearest-neighbor filtering to match direct pixel drawing
+        canvas:setFilter("nearest", "nearest")
         love.graphics.setCanvas(canvas)
         love.graphics.clear(0, 0, 0, 0)
         -- Will be populated on first draw
@@ -238,30 +240,35 @@ local function drawStoneBase(x, y, ps, time, seed, level)
 end
 
 -- Draw stone base at a given scale (for emergence animation)
+-- Uses same positioning logic as drawStoneBase for visual consistency
 local function drawStoneBaseScaled(x, y, ps, time, seed, scale)
     scale = scale or 1
 
-    local baseRadius = BASE_RADIUS * scale
+    local baseRadius = BASE_RADIUS
     local topVisible = 0.9
-    local heightRatio = 0.20
+    local heightRatio = 0.20  -- Always level 1 during build animation
 
-    local ellipseRadiusX = baseRadius
-    local ellipseRadiusY = baseRadius * topVisible
-    local baseHeight = baseRadius * 2 * heightRatio
+    local ellipseRadiusX = baseRadius * scale
+    local ellipseRadiusY = baseRadius * topVisible * scale
+    local baseHeight = baseRadius * 2 * heightRatio * scale
 
-    -- Ground shadow (scales with base)
-    local shadowY = y + baseHeight * 0.5 + ps * 3 * scale
+    -- Use same fixed anchor as drawStoneBase (level 1 height)
+    local level1Height = baseRadius * 2 * 0.20
+    local baseBottomY = y + level1Height * 0.5
+
+    -- Ground shadow (same positioning as drawStoneBase)
+    local shadowY = baseBottomY + ps * 3
     drawPixelEllipse(x, shadowY, ellipseRadiusX * 1.3, ellipseRadiusY * 0.7, ps,
         function(px, py, distNorm, angle)
             local fade = (1 - distNorm) * 0.5 * scale
             return 0, 0, 0, fade
         end)
 
-    -- Base layers (bottom to top)
+    -- Base layers (bottom to top, anchored at baseBottomY like drawStoneBase)
     local numLayers = math.max(2, math.floor(baseHeight / ps))
     for layer = 0, numLayers - 1 do
         local layerProgress = layer / numLayers
-        local layerY = y + baseHeight * 0.5 - layer * (baseHeight / numLayers)
+        local layerY = baseBottomY - layer * (baseHeight / numLayers)
 
         -- Slight taper
         local taperFactor = 1.0 - layerProgress * 0.08
@@ -301,8 +308,8 @@ local function drawStoneBaseScaled(x, y, ps, time, seed, scale)
             end)
     end
 
-    -- Top surface
-    local topY = y - baseHeight * 0.5
+    -- Top surface (positioned at bottom minus full height)
+    local topY = baseBottomY - baseHeight
     drawPixelEllipse(x, topY, ellipseRadiusX * 0.92, ellipseRadiusY * 0.92, ps,
         function(px, py, distNorm, angle)
             local noise = Procedural.fbm(px * 0.25 + seed, py * 0.25 + seed * 0.5, seed, 2)
@@ -344,13 +351,6 @@ end
 -- =============================================================================
 -- VOID SHAPE HELPERS
 -- =============================================================================
-
--- Check if point is inside a cross/plus shape
-local function isInsideCross(px, py, size, thickness)
-    local inVertical = math.abs(px) <= thickness and math.abs(py) <= size
-    local inHorizontal = math.abs(py) <= thickness and math.abs(px) <= size
-    return inVertical or inHorizontal
-end
 
 -- Check if point is inside a ring (hollow circle)
 local function isInsideRing(px, py, outerR, innerR)
@@ -443,50 +443,6 @@ local function drawVoidOrb(x, y, radius, ps, time, seed, rotation, colors)
                     r = r + colors.edge[1] * edgeFactor * pulse
                     g = g + colors.edge[2] * edgeFactor * pulse
                     b = b + colors.edge[3] * edgeFactor * pulse
-                end
-
-                love.graphics.setColor(clampColor(r, g, b))
-                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
-            end
-        end
-    end
-end
-
-local function drawVoidCross(x, y, radius, ps, time, seed, rotation)
-    local size = radius
-    local thickness = radius * 0.35
-    local gridR = math.ceil(radius / ps) + 1
-
-    for py = -gridR, gridR do
-        for px = -gridR, gridR do
-            -- Rotate coordinates
-            local cosR = math.cos(rotation)
-            local sinR = math.sin(rotation)
-            local rpx = px * cosR + py * sinR
-            local rpy = -px * sinR + py * cosR
-
-            if isInsideCross(rpx * ps, rpy * ps, size, thickness) then
-                local worldX = x + px * ps
-                local worldY = y + py * ps
-                local dist = math.sqrt((rpx * ps)^2 + (rpy * ps)^2)
-                local distNorm = dist / size
-
-                local pulse = math.sin(time * 2.5 + distNorm * 3) * 0.2 + 0.8
-
-                local r = VOID_COLORS.core[1] + (VOID_COLORS.mid[1] - VOID_COLORS.core[1]) * pulse
-                local g = VOID_COLORS.core[2] + (VOID_COLORS.mid[2] - VOID_COLORS.core[2]) * pulse
-                local b = VOID_COLORS.core[3] + (VOID_COLORS.mid[3] - VOID_COLORS.core[3]) * pulse
-
-                -- Edge glow (check distance from cross edge)
-                local edgeDistX = math.min(math.abs(math.abs(rpx * ps) - thickness), math.abs(rpx * ps))
-                local edgeDistY = math.min(math.abs(math.abs(rpy * ps) - thickness), math.abs(rpy * ps))
-                local edgeDist = math.min(edgeDistX, edgeDistY)
-
-                if edgeDist < ps * 2 then
-                    local edgeFactor = 1 - edgeDist / (ps * 2)
-                    r = r + VOID_COLORS.edge[1] * edgeFactor * 0.7
-                    g = g + VOID_COLORS.edge[2] * edgeFactor * 0.7
-                    b = b + VOID_COLORS.edge[3] * edgeFactor * 0.7
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
@@ -641,62 +597,6 @@ local function drawVoidEye(x, y, radius, ps, time, seed, rotation, colors)
     end
 end
 
-local function drawVoidFlame(x, y, radius, ps, time, seed, rotation)
-    local gridR = math.ceil(radius * 1.3 / ps) + 1
-
-    -- OPTIMIZATION: Pre-compute rotation values
-    local cosR = math.cos(rotation - math.pi/2)
-    local sinR = math.sin(rotation - math.pi/2)
-    local timeOffset = time * 3
-    local seedOffset = seed * 0.1
-
-    for py = -gridR, gridR do
-        for px = -gridR, gridR do
-            -- Rotate for aiming (flame points in rotation direction)
-            local rpx = px * cosR + py * sinR
-            local rpy = -px * sinR + py * cosR
-
-            local worldX = x + px * ps
-            local worldY = y + py * ps
-
-            -- Flame shape: wider at bottom, pointed at top
-            local normalizedY = (rpy * ps + radius) / (radius * 2)  -- 0 at bottom, 1 at top
-            if normalizedY < 0 or normalizedY > 1.2 then goto continue end
-
-            local flameWidth = radius * (1 - normalizedY * 0.7) * (0.8 + math.sin(normalizedY * 3 + time * 5) * 0.2)
-
-            -- OPTIMIZATION: Replace fbm with cheap sin-based noise
-            local noise = math.sin(rpx * 0.5 + timeOffset + seedOffset) * 0.3 +
-                          math.sin(normalizedY * 4 + time * 4) * 0.2
-            flameWidth = flameWidth * (1 + noise * 0.2)
-
-            if math.abs(rpx * ps) <= flameWidth then
-                local distFromCenter = math.abs(rpx * ps) / flameWidth
-
-                local intensity = (1 - normalizedY) * (1 - distFromCenter * 0.5)
-                local pulse = math.sin(time * 4 + normalizedY * 5) * 0.15 + 0.85
-
-                local r = VOID_COLORS.core[1] + (VOID_COLORS.edge[1] - VOID_COLORS.core[1]) * intensity * pulse
-                local g = VOID_COLORS.core[2] + (VOID_COLORS.edge[2] - VOID_COLORS.core[2]) * intensity * pulse
-                local b = VOID_COLORS.core[3] + (VOID_COLORS.edge[3] - VOID_COLORS.core[3]) * intensity * pulse
-
-                -- Bright tips
-                if normalizedY > 0.7 then
-                    local tipFactor = (normalizedY - 0.7) / 0.3
-                    r = r + VOID_COLORS.glow[1] * tipFactor * 0.5
-                    g = g + VOID_COLORS.glow[2] * tipFactor * 0.5
-                    b = b + VOID_COLORS.glow[3] * tipFactor * 0.5
-                end
-
-                love.graphics.setColor(clampColor(r, g, b))
-                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
-            end
-
-            ::continue::
-        end
-    end
-end
-
 local function drawVoidStar(x, y, radius, ps, time, seed, rotation, colors)
     colors = colors or DEFAULT_COLORS
     local outerR = radius
@@ -731,83 +631,6 @@ local function drawVoidStar(x, y, radius, ps, time, seed, rotation, colors)
                     r = r + colors.edge[1] * edgeFactor * 0.7
                     g = g + colors.edge[2] * edgeFactor * 0.7
                     b = b + colors.edge[3] * edgeFactor * 0.7
-                end
-
-                love.graphics.setColor(clampColor(r, g, b))
-                PixelDraw.rect(worldX - ps/2, worldY - ps/2, ps, ps)
-            end
-        end
-    end
-end
-
-local function drawVoidSkull(x, y, radius, ps, time, seed, rotation)
-    local gridR = math.ceil(radius / ps) + 1
-
-    for py = -gridR, gridR do
-        for px = -gridR, gridR do
-            local worldX = x + px * ps
-            local worldY = y + py * ps
-
-            -- Rotate for aiming
-            local cosR = math.cos(rotation - math.pi/2)
-            local sinR = math.sin(rotation - math.pi/2)
-            local rpx = px * cosR + py * sinR
-            local rpy = -px * sinR + py * cosR
-
-            local pxs = rpx * ps
-            local pys = rpy * ps
-
-            -- Skull shape: rounded top, narrower jaw
-            local skullTop = -radius * 0.3
-            local skullBot = radius * 0.6
-            local jawStart = radius * 0.1
-
-            local inSkull = false
-            local isEyeSocket = false
-
-            if pys < jawStart then
-                -- Upper skull (circular)
-                local upperDist = math.sqrt(pxs^2 + (pys - skullTop * 0.5)^2)
-                inSkull = upperDist < radius * 0.85
-
-                -- Eye sockets
-                local eyeOffsetX = radius * 0.35
-                local eyeOffsetY = -radius * 0.1
-                local eyeRadius = radius * 0.22
-                local leftEyeDist = math.sqrt((pxs + eyeOffsetX)^2 + (pys - eyeOffsetY)^2)
-                local rightEyeDist = math.sqrt((pxs - eyeOffsetX)^2 + (pys - eyeOffsetY)^2)
-                isEyeSocket = leftEyeDist < eyeRadius or rightEyeDist < eyeRadius
-            else
-                -- Jaw (narrower)
-                local jawWidth = radius * 0.6 * (1 - (pys - jawStart) / (skullBot - jawStart) * 0.4)
-                inSkull = math.abs(pxs) < jawWidth and pys < skullBot
-            end
-
-            if inSkull then
-                local dist = math.sqrt(pxs^2 + pys^2)
-                local distNorm = dist / radius
-
-                local r, g, b
-                if isEyeSocket then
-                    -- Glowing eye sockets
-                    local pulse = math.sin(time * 3) * 0.3 + 0.7
-                    r = VOID_COLORS.edge[1] * pulse
-                    g = VOID_COLORS.edge[2] * pulse
-                    b = VOID_COLORS.edge[3] * pulse
-                else
-                    -- Skull body
-                    local pulse = math.sin(time * 2 + distNorm * 3) * 0.15 + 0.85
-                    r = VOID_COLORS.core[1] + (VOID_COLORS.mid[1] - VOID_COLORS.core[1]) * pulse
-                    g = VOID_COLORS.core[2] + (VOID_COLORS.mid[2] - VOID_COLORS.core[2]) * pulse
-                    b = VOID_COLORS.core[3] + (VOID_COLORS.mid[3] - VOID_COLORS.core[3]) * pulse
-
-                    -- Subtle edge glow
-                    if distNorm > 0.7 then
-                        local edgeFactor = (distNorm - 0.7) / 0.3
-                        r = r + VOID_COLORS.edge[1] * edgeFactor * 0.4
-                        g = g + VOID_COLORS.edge[2] * edgeFactor * 0.4
-                        b = b + VOID_COLORS.edge[3] * edgeFactor * 0.4
-                    end
                 end
 
                 love.graphics.setColor(clampColor(r, g, b))
@@ -1302,6 +1125,46 @@ local THUMBNAIL_DRAWERS = {
 
 function TurretConcepts.init()
     -- Nothing to initialize
+end
+
+-- Pre-render any tower base canvases that haven't been rendered yet
+-- Call this BEFORE the main entity draw loop to avoid canvas switching during active rendering
+function TurretConcepts.preRenderCaches(towers)
+    if not towers then return end
+
+    local ps = PIXEL_SIZE
+    -- Cache is used once base phase completes (baseProgress >= 1)
+    -- baseProgress = buildProgress / basePhaseEnd, so cache when buildProgress >= basePhaseEnd
+    local buildCfg = Config.TOWER_BUILD
+    local basePhaseEnd = buildCfg.basePhaseDuration / buildCfg.duration
+
+    for _, tower in ipairs(towers) do
+        -- Pre-cache when base phase completes (this is when drawVoidTurret starts using the cache)
+        if tower.buildProgress and tower.buildProgress >= basePhaseEnd then
+            local towerConfig = Config.TOWERS[tower.towerType]
+            if towerConfig and towerConfig.voidVariant then
+                local seed = tower.voidSeed
+                local level = tower.level or 1
+                local cached = getCachedBase(seed, level)
+
+                if not cached.rendered then
+                    -- Render base to canvas
+                    local prevCanvas = love.graphics.getCanvas()
+                    love.graphics.push()
+                    love.graphics.origin()
+                    love.graphics.setCanvas(cached.canvas)
+                    love.graphics.clear(0, 0, 0, 0)
+                    drawStoneBase(BASE_CANVAS_SIZE / 2, BASE_CANVAS_SIZE / 2, ps, 0, seed, level)
+                    love.graphics.setCanvas(prevCanvas)
+                    love.graphics.pop()
+                    cached.rendered = true
+                end
+            end
+        end
+    end
+
+    -- Reset color after pre-rendering
+    love.graphics.setColor(1, 1, 1, 1)
 end
 
 -- Draw a simplified thumbnail for the panel UI (no stone base)

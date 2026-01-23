@@ -7,6 +7,7 @@ local Config = require("src.config")
 local Procedural = require("src.rendering.procedural")
 local PixelDraw = require("src.rendering.pixel_draw")
 local StatusEffects = require("src.systems.status_effects")
+local VoidRenderer = require("src.rendering.void_renderer")
 
 local Creep = Object:extend()
 
@@ -96,91 +97,34 @@ function Creep:new(x, y, creepType, healthMultiplier, speedMultiplier)
         self.cfg = Config.VOID_BOSS
         self.pixelSize = self.cfg.pixelSize or 4
         self.isBoss = true
-        self:generatePixels()  -- Uses same generation as voidSpawn but with boss config
+        self:generatePixelPool()  -- Uses VoidRenderer
     elseif creepType == "redBoss" then
         self.cfg = Config.RED_BOSS
         self.pixelSize = self.cfg.pixelSize or 4
         self.isBoss = true
         self.isRedBoss = true
-        self:generatePixels()  -- Uses same generation as voidSpawn but with red boss config
+        self:generatePixelPool()  -- Uses VoidRenderer
     else
         self.cfg = Config.VOID_SPAWN
         self.pixelSize = self.cfg.pixelSize or 3
-        self:generatePixels()
+        self:generatePixelPool()  -- Uses VoidRenderer
     end
 end
 
--- Pre-generate pixel positions relative to center
--- Generates a pool of potential pixels; animated boundary determines visibility at draw time
--- OPTIMIZED: Pre-computes wobble phase and classifies pixels as edge/interior for faster drawing
-function Creep:generatePixels()
-    self.pixels = {}
-    local ps = self.pixelSize
-    local radius = self.size
-    local cfg = Config.VOID_SPAWN
+-- Generate pixel pool using VoidRenderer (for blob-style creeps)
+function Creep:generatePixelPool()
+    local cfg = self.cfg
 
-    -- Create a grid of pixels within an expanded area (to allow membrane breathing)
-    local expandedRadius = radius * 1.3  -- Extra room for wobble expansion
-    local gridSize = math.ceil(expandedRadius * 2 / ps)
-    local halfGrid = gridSize / 2
-
-    -- Pre-compute base radius thresholds for pixel classification
-    local baseInnerRadius = radius * 0.5  -- Pixels always inside (no boundary check needed)
-    local baseOuterRadius = radius * (0.7 + 0.5 + cfg.wobbleAmount * 0.5)
-
-    for py = 0, gridSize - 1 do
-        for px = 0, gridSize - 1 do
-            -- Position relative to center
-            local relX = (px - halfGrid + 0.5) * ps
-            local relY = (py - halfGrid + 0.5) * ps
-
-            -- Distance from center
-            local dist = math.sqrt(relX * relX + relY * relY)
-            local angle = math.atan2(relY, relX)
-
-            -- Base edge noise (static shape component)
-            local baseEdgeNoise = Procedural.fbm(
-                math.cos(angle) * cfg.distortionFrequency,
-                math.sin(angle) * cfg.distortionFrequency,
-                self.seed,
-                cfg.octaves
-            )
-
-            -- Pre-compute wobble phase offset (OPTIMIZATION: replaces per-frame fbm call)
-            -- This creates the same organic variation but computed once at spawn
-            local wobblePhase = Procedural.fbm(
-                angle * cfg.wobbleFrequency,
-                0,
-                self.seed + 500,
-                2
-            ) * math.pi * 2
-
-            -- Only include pixels that could potentially be visible (within expanded bounds)
-            if dist < baseOuterRadius then
-                local distNorm = dist / radius
-                -- Classify pixel zone for draw optimization
-                local zone = "boundary"  -- Default: needs boundary check each frame
-                if dist < baseInnerRadius then
-                    zone = "interior"    -- Always visible, skip boundary check
-                end
-
-                table.insert(self.pixels, {
-                    relX = relX,
-                    relY = relY,
-                    px = px,
-                    py = py,
-                    dist = dist,
-                    distNorm = distNorm,
-                    angle = angle,
-                    baseEdgeNoise = baseEdgeNoise,  -- Store for animated boundary calc
-                    wobblePhase = wobblePhase,      -- Pre-computed wobble phase offset
-                    zone = zone,                    -- Pixel classification for draw optimization
-                    rnd = Procedural.hash(px, py, self.seed + 888),
-                    rnd2 = Procedural.hash(px * 2.1, py * 1.7, self.seed + 777),
-                })
-            end
-        end
-    end
+    self.pixelPool = VoidRenderer.createPixelPool({
+        radius = self.size,
+        pixelSize = self.pixelSize,
+        seed = self.seed,
+        expandFactor = 1.3,
+        distortionFrequency = cfg.distortionFrequency,
+        octaves = cfg.octaves,
+        wobbleFrequency = cfg.wobbleFrequency,
+        wobbleAmount = cfg.wobbleAmount,
+    })
 end
 
 -- Generate pixel pool for spider variant (elongated rift body + void shard legs)
@@ -240,7 +184,7 @@ function Creep:generateSpiderPixels()
                     -- Grid offset from body center (integer pixel units)
                     gridX = gridX,
                     gridY = gridY,
-                    -- World-relative position (for cadaver compatibility)
+                    -- World-relative position
                     relX = testX,
                     relY = testY,
                     px = px,
@@ -681,7 +625,7 @@ function Creep:spawnStatusParticles(dt)
     end
 end
 
--- Check if creep is in dying animation (for cadaver creation timing)
+-- Check if creep is in dying animation
 function Creep:isDying()
     return self.dying and not self.dead
 end
@@ -772,109 +716,48 @@ function Creep:draw()
     local shadowY = self.y + self.size * 1.3
     love.graphics.ellipse("fill", self.x, shadowY, shadowWidth, shadowHeight)
 
-    local radius = self.size
-
-    -- Pre-compute time-based wobble factor
-    local wobbleTime = t * cfg.wobbleSpeed
-
-    -- Cache sparkle threshold
-    local sparkleThreshold = cfg.sparkleThreshold or 0.96
-    local sparkleTimeX = math.floor(t * 8)
-    local sparkleTimeY = math.floor(t * 5)
-
-    -- Check for slow effect - will apply blue glow tint to all pixels
+    -- Check for slow effect - will apply blue glow tint
     local hasSlowEffect = StatusEffects.hasEffect(self, StatusEffects.SLOW) and not self:isSpawning()
-    local slowGlowIntensity = 0
-    local slowColor = nil
+    local slowColorShift = nil
     if hasSlowEffect then
-        slowColor = Config.STATUS_EFFECTS.slow.color
-        -- Pulsing glow intensity
-        slowGlowIntensity = 0.25 + sin(t * 4) * 0.1
+        local slowColor = Config.STATUS_EFFECTS.slow.color
+        local slowGlowIntensity = 0.25 + sin(t * 4) * 0.1
+        -- Convert to color shift format
+        slowColorShift = {
+            (slowColor[1] - 0.5) * slowGlowIntensity,
+            (slowColor[2] - 0.5) * slowGlowIntensity,
+            (slowColor[3] - 0.5) * slowGlowIntensity,
+        }
     end
 
-    -- Draw each pixel with animated void effects (matching portal style)
-    for _, p in ipairs(self.pixels) do
-        local wobbleNoise = math.sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
-        local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
-
-        -- Skip pixels outside the current animated boundary
-        if p.zone == "boundary" and p.dist >= animatedEdgeRadius then
-            goto continue
-        end
-
-        local isEdge = p.dist > animatedEdgeRadius - ps * 1.5
-
-        -- Apply scale from center (with death squash on Y axis)
-        local scaledRelX = p.relX * scale
-        local scaledRelY = p.relY * scale * deathSquashY
-        local screenX = self.x + scaledRelX - ps * scale / 2
-        local screenY = self.y + scaledRelY - ps * scale * deathSquashY / 2
-        local pixelW = ps * scale
-        local pixelH = ps * scale * deathSquashY
-
-        -- Check if in squared core region (pitch black center)
-        local coreSize = cfg.coreSize or 5
-        local inCore = abs(p.relX) < coreSize and abs(p.relY) < coreSize
-
-        local r, g, b
-
-        -- Sparkles
-        local sparkle = Procedural.hash(p.px + sparkleTimeX, p.py + sparkleTimeY, self.seed + 333)
-        if sparkle > sparkleThreshold then
-            r, g, b = colors.sparkle[1], colors.sparkle[2], colors.sparkle[3]
-        elseif inCore then
-            -- Deep void core (pitch black)
-            local n = Procedural.hash(p.px + floor(t * 2), p.py, self.seed) * 0.01
-            r = colors.core[1] + n
-            g = colors.core[2] + n * 0.5
-            b = colors.core[3] + n
-        elseif isEdge then
-            -- Edge glow
-            local pulse = math.sin(t * cfg.pulseSpeed + p.angle * 2) * 0.3 + 0.7
-            r = colors.edgeGlow[1] * pulse
-            g = colors.edgeGlow[2] * pulse
-            b = colors.edgeGlow[3] * pulse
-        else
-            -- Interior (dark purple)
-            local swirl = math.sin(p.angle * 3 + t * cfg.swirlSpeed + p.distNorm * 4) * 0.5 + 0.5
-            local v = p.rnd * 0.3 + swirl * 0.2 + p.distNorm * 0.3
-            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * v
-            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * v
-            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * v
-        end
-
-        -- Apply hit flash (additive white)
-        if self.hitFlashTimer > 0 then
-            local flashIntensity = self.hitFlashTimer / Config.CREEP_HIT.flashDuration
-            r = r + flashIntensity * 0.8
-            g = g + flashIntensity * 0.8
-            b = b + flashIntensity * 0.6
-        end
-
-        -- Apply death desaturation (shift toward gray)
-        if deathDesaturate > 0 then
-            local gray = (r + g + b) / 3
-            r = r + (gray - r) * deathDesaturate
-            g = g + (gray - g) * deathDesaturate
-            b = b + (gray - b) * deathDesaturate
-        end
-
-        -- Apply slow effect blue glow tint
-        if hasSlowEffect then
-            r = r + (slowColor[1] - r) * slowGlowIntensity
-            g = g + (slowColor[2] - g) * slowGlowIntensity
-            b = b + (slowColor[3] - b) * slowGlowIntensity
-        end
-
-        love.graphics.setColor(r * alpha, g * alpha, b * alpha, alpha)
-        PixelDraw.rect(screenX, screenY, pixelW, pixelH)
-
-        ::continue::
+    -- Calculate flash intensity from hit timer
+    local flashIntensity = 0
+    if self.hitFlashTimer > 0 then
+        flashIntensity = (self.hitFlashTimer / Config.CREEP_HIT.flashDuration) * 0.8
     end
+
+    -- Draw using VoidRenderer
+    VoidRenderer.draw(self.pixelPool, {
+        x = self.x,
+        y = self.y,
+        time = self.time,
+        scale = scale,
+        alpha = alpha,
+        wobbleSpeed = cfg.wobbleSpeed,
+        wobbleAmount = cfg.wobbleAmount,
+        pulseSpeed = cfg.pulseSpeed,
+        swirlSpeed = cfg.swirlSpeed,
+        sparkleThreshold = cfg.sparkleThreshold or 0.96,
+        coreSize = cfg.coreSize or 5,
+        colors = colors,
+        flashIntensity = flashIntensity,
+        colorShift = slowColorShift,
+        desaturate = deathDesaturate,
+        squashY = deathSquashY,
+    })
 
     -- Draw pixel art health bar when damaged (only when fully spawned)
     if self.hp < self.maxHp and not self:isSpawning() then
-        local ps = self.pixelSize
         local barPixels = 10
         local barWidth = barPixels * ps
         local barX = self.x - barWidth / 2
@@ -890,8 +773,8 @@ function Creep:draw()
         -- Health fill pixels with gradient
         local filledPixels = math.ceil(healthPercent * barPixels)
         for i = 0, filledPixels - 1 do
-            local t = i / barPixels
-            love.graphics.setColor(0.5 + t * 0.2, 0.1, 0.6 + t * 0.2)
+            local barT = i / barPixels
+            love.graphics.setColor(0.5 + barT * 0.2, 0.1, 0.6 + barT * 0.2)
             PixelDraw.rect(barX + i * ps, barY, ps, ps)
         end
     end

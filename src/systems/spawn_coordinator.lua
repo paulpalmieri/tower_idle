@@ -6,11 +6,15 @@ local Config = require("src.config")
 local EventBus = require("src.core.event_bus")
 local EntityManager = require("src.core.entity_manager")
 local Grid = require("src.world.grid")
+local Pathfinding = require("src.systems.pathfinding")
 
 -- Lazy-loaded entity classes to avoid circular dependencies
 local LobbedProjectile, Blackhole, LightningProjectile, Creep
 
 local SpawnCoordinator = {}
+
+-- Cached flow field reference (set by Game on update)
+local cachedFlowField = nil
 
 -- Spawn portals reference for spawn registration (set by Game)
 local spawnPortalsRef = {}
@@ -152,6 +156,11 @@ end
 -- Check if any portal is currently charging
 function SpawnCoordinator.isCharging()
     return currentlyCharging
+end
+
+-- Set the flow field reference for spawn direction calculation
+function SpawnCoordinator.setFlowField(flowField)
+    cachedFlowField = flowField
 end
 
 return SpawnCoordinator

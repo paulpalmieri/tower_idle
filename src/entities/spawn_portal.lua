@@ -6,6 +6,7 @@ local Object = require("lib.classic")
 local Config = require("src.config")
 local EventBus = require("src.core.event_bus")
 local Procedural = require("src.rendering.procedural")
+local VoidRenderer = require("src.rendering.void_renderer")
 
 local SpawnPortal = Object:extend()
 
@@ -52,65 +53,28 @@ function SpawnPortal:new(gridX, gridY, index)
     -- Active spawns (for tear effect rendering)
     self.activeSpawns = {}
 
+    -- Charge growth scale (multiplied with hoverScale for visual growth during charge)
+    self.chargeScale = 1.0
+    self.maxChargeScale = 1.2  -- Grow to 120% at full charge
+
     -- Generate pixel pool
     self:generatePixels()
 end
 
--- Generate pixel pool for procedural rendering
+-- Generate pixel pool using VoidRenderer
 function SpawnPortal:generatePixels()
-    self.pixels = {}
-    local ps = self.pixelSize
-    local radius = self.size
     local cfg = Config.VOID_PORTAL or {}
 
-    local distortionFreq = cfg.distortionFrequency or 2.0
-    local octaves = cfg.octaves or 3
-    local wobbleFreq = cfg.wobbleFrequency or 3.0
-
-    -- Create grid of pixels
-    local expandedRadius = radius * 1.4
-    local gridSize = math.ceil(expandedRadius * 2 / ps)
-    local halfGrid = gridSize / 2
-
-    for py = 0, gridSize - 1 do
-        for px = 0, gridSize - 1 do
-            local relX = (px - halfGrid + 0.5) * ps
-            local relY = (py - halfGrid + 0.5) * ps
-            local dist = math.sqrt(relX * relX + relY * relY)
-            local angle = math.atan2(relY, relX)
-
-            local baseEdgeNoise = Procedural.fbm(
-                math.cos(angle) * distortionFreq,
-                math.sin(angle) * distortionFreq,
-                self.seed,
-                octaves
-            )
-
-            local wobblePhase = Procedural.fbm(
-                angle * wobbleFreq,
-                0,
-                self.seed + 500,
-                2
-            ) * math.pi * 2
-
-            local maxEdgeRadius = radius * 1.5
-            if dist < maxEdgeRadius then
-                local distNorm = dist / radius
-                table.insert(self.pixels, {
-                    relX = relX,
-                    relY = relY,
-                    px = px,
-                    py = py,
-                    dist = dist,
-                    distNorm = distNorm,
-                    angle = angle,
-                    baseEdgeNoise = baseEdgeNoise,
-                    wobblePhase = wobblePhase,
-                    rnd = Procedural.hash(px, py, self.seed + 888),
-                })
-            end
-        end
-    end
+    self.pixelPool = VoidRenderer.createPixelPool({
+        radius = self.size,
+        pixelSize = self.pixelSize,
+        seed = self.seed,
+        expandFactor = 1.4,
+        distortionFrequency = cfg.distortionFrequency or 2.0,
+        octaves = cfg.octaves or 3,
+        wobbleFrequency = cfg.wobbleFrequency or 3.0,
+        wobbleAmount = cfg.wobbleAmount or 0.4,
+    })
 end
 
 function SpawnPortal:update(dt)
@@ -132,6 +96,11 @@ function SpawnPortal:update(dt)
     -- Update charging timer and trigger spawn when ready
     if self.isCharging then
         self.chargeTimer = self.chargeTimer + dt
+
+        -- Grow scale during charge (1.0 -> maxChargeScale over charge duration)
+        local chargeProgress = self.chargeTimer / self.chargeDuration
+        self.chargeScale = 1.0 + (self.maxChargeScale - 1.0) * chargeProgress
+
         if self.chargeTimer >= self.chargeDuration then
             -- Charge complete - emit spawn ready event
             EventBus.emit("portal_spawn_ready", {
@@ -145,6 +114,9 @@ function SpawnPortal:update(dt)
             self.isCharging = false
             self.chargeTimer = 0
             self.chargingCreepType = nil
+
+            -- Reset charge scale
+            self.chargeScale = 1.0
         end
     end
 
@@ -277,9 +249,9 @@ function SpawnPortal:draw()
         colors = baseColors
     end
 
-    local ps = self.pixelSize
     local t = self.time
-    local radius = self.size * self.hoverScale
+    local combinedScale = self.hoverScale * self.chargeScale
+    local radius = self.size * combinedScale
 
     -- Glow intensity when about to spawn or charging
     local glowIntensity = 0
@@ -298,58 +270,27 @@ function SpawnPortal:draw()
     love.graphics.setColor(0, 0, 0, 0.3)
     love.graphics.ellipse("fill", self.x, shadowY, radius * 0.8, radius * 0.4)
 
-    -- Pre-compute time values
-    local wobbleSpeed = cfg.wobbleSpeed or 2.0
-    local wobbleAmount = cfg.wobbleAmount or 0.4
-    local wobbleTime = t * wobbleSpeed
-    local sparkleThreshold = 0.97
-    local sparkleTimeX = math.floor(t * 8)
-    local sparkleTimeY = math.floor(t * 5)
-
-    -- Draw pixels
-    for _, p in ipairs(self.pixels) do
-        local wobbleNoise = math.sin(wobbleTime + p.wobblePhase) * 0.5 + 0.5
-        local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.4 + wobbleNoise * wobbleAmount * 0.3)
-
-        if p.dist >= animatedEdgeRadius then
-            goto continue
-        end
-
-        local isEdge = p.dist > animatedEdgeRadius - ps * 1.5
-        local screenX = math.floor(self.x + p.relX * self.hoverScale - ps / 2)
-        local screenY = math.floor(self.y + p.relY * self.hoverScale - ps / 2)
-
-        local r, g, b
-
-        -- Sparkles
-        local sparkle = Procedural.hash(p.px + sparkleTimeX, p.py + sparkleTimeY, self.seed + 333)
-        if sparkle > sparkleThreshold then
-            r, g, b = colors.sparkle[1], colors.sparkle[2], colors.sparkle[3]
-        elseif isEdge then
-            local pulse = math.sin(t * 3 + p.angle * 2) * 0.3 + 0.7
-            r = colors.edgeGlow[1] * pulse
-            g = colors.edgeGlow[2] * pulse
-            b = colors.edgeGlow[3] * pulse
-        else
-            local swirl = math.sin(p.angle * 3 + t * 2 + p.distNorm * 4) * 0.5 + 0.5
-            local v = p.rnd * 0.3 + swirl * 0.2 + p.distNorm * 0.3
-            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * v
-            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * v
-            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * v
-        end
-
-        -- Apply glow intensity
-        if glowIntensity > 0 then
-            r = r + glowIntensity * 0.3
-            g = g + glowIntensity * 0.15
-            b = b + glowIntensity * 0.4
-        end
-
-        love.graphics.setColor(r, g, b)
-        love.graphics.rectangle("fill", screenX, screenY, ps, ps)
-
-        ::continue::
+    -- Calculate glow-based color shift
+    local colorShift = nil
+    if glowIntensity > 0 then
+        colorShift = {glowIntensity * 0.3, glowIntensity * 0.15, glowIntensity * 0.4}
     end
+
+    -- Draw using VoidRenderer
+    VoidRenderer.draw(self.pixelPool, {
+        x = self.x,
+        y = self.y,
+        time = self.time,
+        scale = combinedScale,
+        wobbleSpeed = cfg.wobbleSpeed or 2.0,
+        wobbleAmount = cfg.wobbleAmount or 0.4,
+        pulseSpeed = 3.0,
+        swirlSpeed = 2.0,
+        sparkleThreshold = 0.97,
+        coreSize = 5,
+        colors = colors,
+        colorShift = colorShift,
+    })
 end
 
 -- Draw inactive (dim) portal
@@ -363,7 +304,7 @@ function SpawnPortal:drawInactive()
 
     -- Draw dim outline only
     local t = self.time
-    for _, p in ipairs(self.pixels) do
+    for _, p in ipairs(self.pixelPool.pixels) do
         local animatedEdgeRadius = radius * 0.75
         if p.dist >= animatedEdgeRadius or p.dist < animatedEdgeRadius - ps * 2 then
             goto continue

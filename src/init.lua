@@ -70,7 +70,6 @@ local state = {
     towers = {},
     creeps = {},
     projectiles = {},
-    cadavers = {},
     groundEffects = {},
     chainLightnings = {},
     lobbedProjectiles = {},
@@ -99,6 +98,8 @@ local state = {
     showDebug = false,  -- Toggle with D key
     debugPath = nil,    -- Cached path for debug visualization
     showFPS = false,    -- Toggle with F1 key
+    -- Settings menu return target
+    settingsReturnTo = nil,  -- Track where to return after settings (e.g., "main_menu")
 }
 
 function Game.load()
@@ -117,7 +118,6 @@ function Game.load()
     state.towers = EntityManager.getTowers()
     state.creeps = EntityManager.getCreeps()
     state.projectiles = EntityManager.getProjectiles()
-    state.cadavers = EntityManager.getCadavers()
     state.groundEffects = EntityManager.getGroundEffects()
     state.chainLightnings = EntityManager.getChainLightnings()
     state.lobbedProjectiles = EntityManager.getLobbedProjectiles()
@@ -151,6 +151,7 @@ function Game.load()
 
     -- Compute initial pathfinding
     state.flowField = Pathfinding.computeFlowField(Grid)
+    SpawnCoordinator.setFlowField(state.flowField)
     -- Debug path is computed lazily when debug mode is enabled
 
     -- Initialize anger system
@@ -268,14 +269,20 @@ function Game.spawnTestTowers()
 
     -- Recompute pathfinding after placing all towers
     state.flowField = Pathfinding.computeFlowField(Grid)
+    SpawnCoordinator.setFlowField(state.flowField)
     _recomputeDebugPath()
+    -- Invalidate grid renderer cache
+    GridRenderer.invalidateCache()
 end
 
 function Game.setupEvents()
     EventBus.on("tower_placed", function(data)
         -- Recompute pathfinding when towers change
         state.flowField = Pathfinding.computeFlowField(Grid)
+        SpawnCoordinator.setFlowField(state.flowField)
         _recomputeDebugPath()
+        -- Invalidate grid renderer cache (will rebuild on next draw)
+        GridRenderer.invalidateCache()
         -- Track stats for recap screen
         Economy.recordTowerBuilt()
     end)
@@ -455,100 +462,6 @@ function Game.spawnImmediateEnemy(portalIndex)
 
     -- Register spawn with portal for tear effect rendering
     portal:registerSpawn(creep)
-end
-
--- Procedural noise for cadaver rendering (simplified from creep)
-local Procedural = require("src.rendering.procedural")
-
--- Draw a single cadaver (collapsed void remains)
--- Pre-compute cadaver visible pixels when created (OPTIMIZATION)
--- Called once when cadaver is created, stores only visible pixels with pre-computed colors
-local function _prepareCadaverPixels(cadaver)
-    local cfg = Config.VOID_SPAWN
-    local colors = cfg.colors
-    local ps = cadaver.pixelSize
-    local t = cadaver.time
-    local radius = cadaver.size
-
-    cadaver.visiblePixels = {}
-
-    for _, p in ipairs(cadaver.pixels) do
-        -- Use pre-computed wobblePhase if available, otherwise calculate once
-        local wobbleNoise
-        if p.wobblePhase then
-            wobbleNoise = math.sin(t * cfg.wobbleSpeed + p.wobblePhase) * 0.5 + 0.5
-        else
-            wobbleNoise = math.sin(p.angle * cfg.wobbleFrequency + t * cfg.wobbleSpeed) * 0.5 + 0.5
-        end
-        local animatedEdgeRadius = radius * (0.7 + p.baseEdgeNoise * 0.5 + wobbleNoise * cfg.wobbleAmount * 0.3)
-
-        -- Skip pixels outside the frozen boundary
-        if p.dist >= animatedEdgeRadius then
-            goto continue
-        end
-
-        -- Pre-compute color
-        local isEdge = p.dist > animatedEdgeRadius - ps * 1.5
-        local r, g, b
-        if isEdge then
-            r = colors.edgeGlow[1] * 0.5
-            g = colors.edgeGlow[2] * 0.5
-            b = colors.edgeGlow[3] * 0.5
-        else
-            local blend = p.distNorm * 0.5 + p.rnd * 0.2
-            r = colors.core[1] + (colors.mid[1] - colors.core[1]) * blend
-            g = colors.core[2] + (colors.mid[2] - colors.core[2]) * blend
-            b = colors.core[3] + (colors.mid[3] - colors.core[3]) * blend
-        end
-
-        table.insert(cadaver.visiblePixels, {
-            relX = p.relX,
-            relY = p.relY,
-            r = r, g = g, b = b,
-        })
-
-        ::continue::
-    end
-
-    -- Clear original pixels to save memory
-    cadaver.pixels = nil
-end
-
-local function _drawCadaver(cadaver)
-    local ps = cadaver.pixelSize
-
-    -- Calculate fade progress (0 = fresh, 1 = fully faded)
-    local fadeProgress = cadaver.fadeTimer / Config.CADAVER_FADE_DURATION
-    local fadeAlpha = 1.0 - fadeProgress
-
-    -- Skip drawing if nearly invisible
-    if fadeAlpha < 0.01 then return end
-
-    -- Pre-compute visible pixels on first draw
-    if not cadaver.visiblePixels then
-        _prepareCadaverPixels(cadaver)
-    end
-
-    -- Cadaver settings
-    local alpha = 0.35 * fadeAlpha
-    local squashY = 0.75
-    local squashX = 1.0
-
-    -- Draw flattened shadow first
-    love.graphics.setColor(0, 0, 0, alpha * 0.3)
-    local shadowWidth = cadaver.size * 2.0 * squashX
-    local shadowHeight = cadaver.size * 0.5
-    love.graphics.ellipse("fill", cadaver.x, cadaver.y, shadowWidth, shadowHeight)
-
-    -- Draw pre-computed visible pixels (no per-pixel calculations)
-    local pixelW = ps * squashX
-    local pixelH = ps * squashY
-    for _, vp in ipairs(cadaver.visiblePixels) do
-        local screenX = cadaver.x + vp.relX * squashX - ps * squashX / 2
-        local screenY = cadaver.y + vp.relY * squashY - ps * squashY / 2
-        love.graphics.setColor(vp.r, vp.g, vp.b, alpha)
-        love.graphics.rectangle("fill", screenX, screenY, pixelW, pixelH)
-    end
 end
 
 -- Find tower at screen position (used for hover detection and click handling)
@@ -749,22 +662,6 @@ function Game.update(dt)
                 })
             end
         end
-        -- Create cadaver immediately when death animation completes
-        if creep.dead and not creep.cadaverCreated and not creep.reachedBase then
-            creep.cadaverCreated = true
-            -- Spiders use bodyPixels, standard creeps use pixels
-            local pixelData = creep.pixels or creep.bodyPixels
-            table.insert(state.cadavers, {
-                x = creep.x,
-                y = creep.y,
-                size = creep.size,
-                seed = creep.seed,
-                time = creep.time,
-                pixelSize = creep.pixelSize,
-                pixels = pixelData,
-                fadeTimer = 0,
-            })
-        end
         -- Remove creep when particles are done
         if creep:canRemove() then
             table.remove(state.creeps, i)
@@ -772,16 +669,6 @@ function Game.update(dt)
         end
     end
     Profiler.stop("creeps_update")
-
-    -- Update cadavers (fade out and remove expired ones)
-    local realDt = math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME)
-    for i = #state.cadavers, 1, -1 do
-        local cadaver = state.cadavers[i]
-        cadaver.fadeTimer = cadaver.fadeTimer + realDt
-        if cadaver.fadeTimer >= Config.CADAVER_FADE_DURATION then
-            table.remove(state.cadavers, i)
-        end
-    end
 
     -- Update background animation (uses real dt for smooth effects regardless of game speed)
     Background.update(math.min(love.timer.getDelta(), Config.MAX_DELTA_TIME))
@@ -888,6 +775,10 @@ function Game.draw()
         love.graphics.rectangle("fill", 0, 0, windowW, windowH)
     end
 
+    -- Pre-render any tower base canvases that need caching
+    -- MUST happen BEFORE PostProcessing.beginFrame() to avoid canvas switching during active scene rendering
+    TurretConcepts.preRenderCaches(state.towers)
+
     -- Begin post-processing pipeline (render to scene canvas at base resolution)
     -- This must happen BEFORE applying transform so scene renders at 1:1
     PostProcessing.beginFrame()
@@ -925,13 +816,6 @@ function Game.draw()
         portal:draw()
     end
     Profiler.stop("portals_draw")
-
-    -- Draw cadavers (dead creep remains on floor, behind everything else)
-    Profiler.start("cadavers_draw")
-    for _, cadaver in ipairs(state.cadavers) do
-        _drawCadaver(cadaver)
-    end
-    Profiler.stop("cadavers_draw")
 
     -- Draw range ellipse for selected tower FIRST (behind everything)
     if state.selectedTower then
@@ -1139,7 +1023,6 @@ function Game.draw()
         local towerCount = #state.towers
         local projCount = #state.projectiles + #state.lobbedProjectiles + #state.lightningProjectiles
         local effectCount = #state.groundEffects + #state.blackholes + #state.chainLightnings + #state.explosionBursts
-        local cadaverCount = #state.cadavers
 
         -- Build stats text
         local lines = {
@@ -1149,7 +1032,6 @@ function Game.draw()
             string.format("Towers: %d", towerCount),
             string.format("Proj: %d", projCount),
             string.format("Effects: %d", effectCount),
-            string.format("Cadavers: %d", cadaverCount),
         }
 
         love.graphics.setFont(Fonts.get("small"))
@@ -1247,7 +1129,10 @@ local function _sellTower(tower)
 
     -- Recompute pathfinding
     state.flowField = Pathfinding.computeFlowField(Grid)
+    SpawnCoordinator.setFlowField(state.flowField)
     _recomputeDebugPath()
+    -- Invalidate grid renderer cache (will rebuild on next draw)
+    GridRenderer.invalidateCache()
 
     -- Emit event
     EventBus.emit("tower_sold", { tower = tower, refund = refund })
@@ -1738,7 +1623,6 @@ function Game.restart()
     state.towers = EntityManager.getTowers()
     state.creeps = EntityManager.getCreeps()
     state.projectiles = EntityManager.getProjectiles()
-    state.cadavers = EntityManager.getCadavers()
     state.groundEffects = EntityManager.getGroundEffects()
     state.chainLightnings = EntityManager.getChainLightnings()
     state.lobbedProjectiles = EntityManager.getLobbedProjectiles()
@@ -1776,7 +1660,10 @@ function Game.restart()
 
     -- Recompute pathfinding
     state.flowField = Pathfinding.computeFlowField(Grid)
+    SpawnCoordinator.setFlowField(state.flowField)
     _recomputeDebugPath()
+    -- Invalidate grid renderer cache (will rebuild on next draw)
+    GridRenderer.invalidateCache()
 
     -- Reset anger system
     Anger.init()

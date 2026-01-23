@@ -9,7 +9,6 @@ local state = {
     towers = {},
     creeps = {},
     projectiles = {},
-    cadavers = {},
     groundEffects = {},
     chainLightnings = {},
     lobbedProjectiles = {},
@@ -34,7 +33,6 @@ function EntityManager.clear()
     state.towers = {}
     state.creeps = {}
     state.projectiles = {}
-    state.cadavers = {}
     state.groundEffects = {}
     state.chainLightnings = {}
     state.lobbedProjectiles = {}
@@ -59,10 +57,6 @@ end
 
 function EntityManager.getProjectiles()
     return state.projectiles
-end
-
-function EntityManager.getCadavers()
-    return state.cadavers
 end
 
 function EntityManager.getGroundEffects()
@@ -104,10 +98,6 @@ end
 
 function EntityManager.addProjectile(projectile)
     table.insert(state.projectiles, projectile)
-end
-
-function EntityManager.addCadaver(cadaver)
-    table.insert(state.cadavers, cadaver)
 end
 
 function EntityManager.addGroundEffect(effect)
@@ -190,15 +180,6 @@ end
 
 function EntityManager.removeDeadExplosionBursts()
     return removeDeadFromCollection(state.explosionBursts)
-end
-
--- Remove expired cadavers (based on lifetime)
-function EntityManager.removeExpiredCadavers(maxLifetime)
-    for i = #state.cadavers, 1, -1 do
-        if state.cadavers[i].lifetime and state.cadavers[i].lifetime > maxLifetime then
-            table.remove(state.cadavers, i)
-        end
-    end
 end
 
 -- =============================================================================

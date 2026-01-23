@@ -29,8 +29,6 @@ Config.PANEL_ALPHA = 0.92        -- Semi-transparent panel background
 -- Legacy aliases (for backwards compatibility)
 Config.SCREEN_WIDTH = Config.CANVAS_WIDTH
 Config.SCREEN_HEIGHT = Config.CANVAS_HEIGHT
-Config.PLAY_AREA_RATIO = 0.75    -- Legacy: play area ratio (unused with fixed canvas)
-Config.PANEL_RATIO = 0.25        -- Legacy: panel ratio (unused with fixed canvas)
 
 -- =============================================================================
 -- WORLD (Scrollable play area - larger than screen)
@@ -54,22 +52,51 @@ Config.CAMERA = {
 }
 
 -- =============================================================================
--- GRID
+-- MAP VARIANTS
 -- =============================================================================
 
-Config.CELL_SIZE = 48          -- Cell size for 18x18 grid
-Config.GRID_COLS = 18          -- Battlefield with border
-Config.GRID_ROWS = 18          -- Battlefield with border
+Config.MAP_VARIANTS = {
+    -- Standard 18x18 map with 4 portals in corners
+    standard = {
+        name = "Standard",
+        cols = 18,
+        rows = 18,
+        cellSize = 48,
+        portalPositions = {{7, 7}, {12, 7}, {7, 12}, {12, 12}},
+        portalActivationWaves = {1, 1, 1, 1},
+    },
+    -- Compact 9x9 map with single center portal
+    compact = {
+        name = "Compact",
+        cols = 9,
+        rows = 9,
+        cellSize = 64,  -- Larger cells to fill similar visual area
+        portalPositions = {{5, 5}},  -- Center of 9x9 grid
+        portalActivationWaves = {1},
+    },
+}
+
+-- Active map variant (change this to switch maps)
+Config.ACTIVE_MAP = "compact"
+
+-- =============================================================================
+-- GRID (derived from active map variant)
+-- =============================================================================
+
+local activeMap = Config.MAP_VARIANTS[Config.ACTIVE_MAP] or Config.MAP_VARIANTS.standard
+
+Config.CELL_SIZE = activeMap.cellSize
+Config.GRID_COLS = activeMap.cols
+Config.GRID_ROWS = activeMap.rows
 
 -- =============================================================================
 -- SPAWN PORTALS (4 portals in 2x2 pattern at center)
 -- =============================================================================
 
 Config.SPAWN_PORTALS = {
-    -- Grid positions for 4 portals in center 10x10 area of 18x18 grid
-    -- Center 10x10 spans cells 5-14, quadrant centers at (7,7), (12,7), (7,12), (12,12)
-    positions = {{7, 7}, {12, 7}, {7, 12}, {12, 12}},
-    activationWaves = {1, 1, 1, 1},  -- All 4 portals active from start
+    -- Portal positions from active map variant
+    positions = activeMap.portalPositions,
+    activationWaves = activeMap.portalActivationWaves,
     size = 24,                          -- Smaller than current void
     glowDuration = 1.5,                 -- Glow before spawn (legacy)
     angerPerClick = 5,                  -- Anger increase per portal click
@@ -766,9 +793,6 @@ Config.CREEP_HIT = {
     particleSpread = 1.2,      -- Cone spread in radians (~70 degrees)
 }
 
--- Cadaver (dead creep remains)
-Config.CADAVER_FADE_DURATION = 10  -- Seconds before cadaver fully fades out
-
 -- =============================================================================
 -- PRESTIGE (Phase 2)
 -- =============================================================================
@@ -905,7 +929,6 @@ Config.UI = {
     padding = 10,             -- Comfortable padding
     buttonHeight = 56,        -- Taller cards for bigger sprites
     buttonSpacing = 6,        -- Nice spacing between cards
-    hudHeight = 0,            -- No longer used - stats are in panel
     -- Layout constants for panel sections
     LAYOUT = {
         sectionSpacing = 10,
@@ -942,22 +965,6 @@ Config.UI = {
             dotSpacing = 20,       -- Spacing between dots
             lineInset = 4,         -- Inner line distance from border
         },
-        -- Legacy settings (kept for compatibility)
-        towerSectionY = 50,
-        enemySectionYOffset = 30,
-        buttonColors = {
-            selected = {0.1, 0.3, 0.1},
-            hovered = {0.15, 0.15, 0.2},
-            default = {0.08, 0.08, 0.12},
-            enemyHovered = {0.2, 0.1, 0.1},
-        },
-        iconXOffset = 25,
-        iconRadius = 12,
-        textXOffset = 45,
-        textYOffset = 10,
-        costYOffset = 30,
-        hotkeyXOffset = 35,
-        statsYOffset = 48,
     },
     -- Frame styles (Dark Fantasy theme)
     -- Each style defines: background, border, highlight, shadow, accent
@@ -1049,16 +1056,6 @@ Config.UPGRADES = {
 
 -- Tower sell refund percentage
 Config.TOWER_SELL_REFUND = 0.75  -- 75% refund of total investment
-
-Config.COLORS.upgrade = {
-    range = {0.5, 0.7, 0.85},             -- Soft blue
-    fireRate = {0.85, 0.7, 0.4},          -- Warm amber
-    damage = {0.85, 0.5, 0.45},           -- Muted red
-    tooltip = {0.11, 0.10, 0.13, 0.95},
-    tooltipBorder = {0.45, 0.42, 0.38},   -- Warm border
-    selected = {0.6, 0.55, 0.4, 0.35},    -- Warm gold highlight
-    hover = {0.7, 0.65, 0.5, 0.25},       -- Warm gold glow for tower hover
-}
 
 Config.UI.tooltip = {
     width = 200,
@@ -1190,6 +1187,47 @@ Config.EXIT_PORTAL = {
         width = 1.6,            -- Shadow width as multiplier of size
         height = 0.4,           -- Shadow height as multiplier of size
         alpha = 0.25,           -- Shadow opacity
+    },
+}
+
+-- =============================================================================
+-- VOID RENDERER (Shared procedural void rendering settings)
+-- =============================================================================
+
+Config.VOID_RENDERER = {
+    -- Shared animation defaults (used by VoidRenderer when not overridden)
+    defaults = {
+        distortionFrequency = 2.0,
+        octaves = 3,
+        wobbleSpeed = 2.5,
+        wobbleFrequency = 3.0,
+        wobbleAmount = 0.4,
+        swirlSpeed = 0.8,
+        pulseSpeed = 2.0,
+        sparkleThreshold = 0.96,
+        coreSize = 5,
+        expandFactor = 1.3,
+    },
+    -- Reusable color palettes
+    palettes = {
+        voidPurple = {
+            core = {0.01, 0.005, 0.02},
+            mid = {0.06, 0.03, 0.10},
+            edgeGlow = {0.85, 0.50, 1.0},
+            sparkle = {0.9, 0.8, 1.0},
+        },
+        voidRed = {
+            core = {0.15, 0.02, 0.02},
+            mid = {0.35, 0.06, 0.06},
+            edgeGlow = {1.0, 0.25, 0.15},
+            sparkle = {1.0, 0.9, 0.7},
+        },
+        exitPortal = {
+            core = {0.15, 0.03, 0.03},
+            mid = {0.40, 0.08, 0.08},
+            edgeGlow = {1.0, 0.35, 0.25},
+            sparkle = {1.0, 0.95, 0.85},
+        },
     },
 }
 
@@ -1521,137 +1559,6 @@ Config.AUDIO = {
             "assets/sounds/ambient/ambient_06.mp3",
         },
     },
-}
-
--- =============================================================================
--- TURRET CONCEPTS (Showcase mode)
--- =============================================================================
-
-Config.TURRET_CONCEPTS = {
-    -- Shared settings
-    pixelSize = 3,
-    baseHeight = 50,      -- Tall towers (~50px height)
-    baseWidth = 36,       -- Tower width
-    shadowAlpha = 0.4,    -- Drop shadow opacity
-
-    -- Concept 1: Crimson Sentinel (Mechanical)
-    crimson_sentinel = {
-        name = "Crimson Sentinel",
-        style = "mechanical",
-        colors = {
-            core = {0.08, 0.04, 0.04},           -- Near-black rust
-            mid = {0.18, 0.10, 0.08},            -- Dark rust
-            edgeGlow = {0.95, 0.25, 0.15},       -- Bright crimson
-            sparkle = {1.0, 0.85, 0.7},          -- Orange-white flash
-            accent = {0.6, 0.15, 0.1},           -- Deep crimson accent
-            conduit = {1.0, 0.4, 0.2},           -- Glowing conduit
-        },
-        idle = {
-            vibrationAmount = 0.5,              -- Pixels of vibration
-            vibrationSpeed = 15,                -- Vibration frequency (Hz-like)
-            conduitPulseSpeed = 2.5,            -- Power conduit pulse rate
-        },
-        recoil = {
-            distance = 4,
-            duration = 0.12,
-        },
-        barrel = {
-            width = 0.5,
-            height = 0.12,
-            pivotOffset = 0.1,
-        },
-    },
-
-    -- Concept 2: Azure Geode (Crystal)
-    azure_geode = {
-        name = "Azure Geode",
-        style = "crystal",
-        colors = {
-            core = {0.02, 0.04, 0.12},           -- Deep void blue
-            mid = {0.08, 0.15, 0.35},            -- Dark sapphire
-            edgeGlow = {0.4, 0.85, 1.0},         -- Bright cyan
-            sparkle = {0.95, 1.0, 1.0},          -- White-cyan flash
-            accent = {0.2, 0.5, 0.8},            -- Mid blue accent
-            facet = {0.5, 0.7, 0.95},            -- Facet highlight
-        },
-        idle = {
-            innerPulseSpeed = 1.8,              -- Inner glow pulse rate
-            facetShimmerSpeed = 3.0,            -- Facet shimmer rate
-            facetPhaseOffset = 0.4,             -- Phase offset between facets
-        },
-        recoil = {
-            distance = 2,
-            duration = 0.08,
-        },
-        barrel = {
-            width = 0.45,
-            height = 0.1,
-            pivotOffset = 0.08,
-        },
-    },
-
-    -- Concept 3: Amber Hive (Organic)
-    amber_hive = {
-        name = "Amber Hive",
-        style = "organic",
-        colors = {
-            core = {0.12, 0.06, 0.02},           -- Dark amber-brown
-            mid = {0.35, 0.20, 0.08},            -- Mid amber
-            edgeGlow = {1.0, 0.75, 0.25},        -- Golden honey edge
-            sparkle = {1.0, 0.95, 0.7},          -- Warm white flash
-            accent = {0.7, 0.45, 0.15},          -- Honey accent
-            membrane = {0.8, 0.55, 0.2},         -- Membrane color
-        },
-        idle = {
-            breathSpeed = 1.2,                  -- Breathing rate
-            breathAmount = 0.02,                -- 2% size pulse
-            cellActivitySpeed = 4.0,            -- Internal cell activity rate
-        },
-        recoil = {
-            distance = 3,
-            duration = 0.15,
-        },
-        barrel = {
-            width = 0.4,
-            height = 0.14,
-            pivotOffset = 0.06,
-        },
-    },
-
-    -- Concept 4: Void Prism (Integrated)
-    void_prism = {
-        name = "Void Prism",
-        style = "integrated",
-        colors = {
-            core = {0.03, 0.01, 0.06},           -- Void black-purple
-            mid = {0.12, 0.05, 0.18},            -- Dark purple
-            edgeGlow = {0.75, 0.4, 1.0},         -- Bright violet
-            sparkle = {0.95, 0.85, 1.0},         -- Purple-white flash
-            accent = {0.5, 0.25, 0.7},           -- Mid violet
-            void = {0.0, 0.0, 0.02},             -- Impossible depth void
-        },
-        idle = {
-            scanSpeed = 0.25,                   -- 4s full rotation (1/4 rev/s)
-            flickerSpeed = 8.0,                 -- Dimensional flicker rate
-            flickerChance = 0.02,               -- Chance of flicker per frame
-        },
-        recoil = {
-            distance = 1,
-            duration = 0.06,
-        },
-        barrel = {
-            width = 0.42,
-            height = 0.08,
-            pivotOffset = 0.05,
-        },
-    },
-}
-
-Config.SHOWCASE = {
-    turretSpacing = 180,
-    backgroundColor = {0.04, 0.03, 0.06},
-    targetSpeed = 80,                           -- Target movement speed for rotation demo
-    fireInterval = 1.2,                         -- Seconds between shots in shooting state
 }
 
 -- =============================================================================

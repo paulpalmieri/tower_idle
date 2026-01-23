@@ -3,6 +3,7 @@
 
 local Config = require("src.config")
 local EventBus = require("src.core.event_bus")
+local SpawnCoordinator = require("src.systems.spawn_coordinator")
 
 local Waves = {}
 
@@ -184,9 +185,10 @@ function Waves.update(dt, creeps)
             _spawnNext()
         end
 
-        -- Check if wave spawning is complete (queue empty)
+        -- Check if wave spawning is complete (queue empty AND portal done spawning)
         -- Note: Don't wait for all creeps to die - click-spawned enemies shouldn't block wave progression
-        if #state.spawnQueue == 0 then
+        -- But DO wait for portals to finish charging/spawning all queued creeps
+        if #state.spawnQueue == 0 and SpawnCoordinator.getPendingSpawnCount() == 0 and not SpawnCoordinator.isCharging() then
             state.spawning = false
             EventBus.emit("wave_cleared", { waveNumber = state.waveNumber })
 
